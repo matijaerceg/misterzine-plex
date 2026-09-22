@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.a8 -text
+*.png -text
+*.rbf -text

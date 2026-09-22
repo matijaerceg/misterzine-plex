@@ -1,0 +1,619 @@
+package ui
+
+import (
+	"net/url"
+	"strings"
+	"time"
+
+	"plexcrt/internal/gfx"
+	"plexcrt/internal/input"
+	"plexcrt/internal/plex"
+)
+
+// Wall is a library browser: a grid of posters four across, scrolling by
+// row. The focused row is whole; the row above peeks in as a sliver and
+// the row below shows under a band carrying the focused item's title and
+// facts. Tabs above switch the view; L/R jump a letter in A to Z, a
+// screen otherwise; a scrollbar down the right edge carries the letter.
+type Wall struct {
+	app     *App
+	section plex.Section
+	view    int
+	pager   *Pager
+	letters []plex.Letter
+	cur     int
+	rowY    Anim
+	holes   []gfx.Rect
+	tabs    bool        // the cursor is on the view tabs above the grid
+	fading  bool        // a poster faded in this frame: keep drawing
+	band    *gfx.Canvas // the info band is composed here (text over posters)
+	bandKey string
+	bandAt  time.Time
+
+	bandBase    *gfx.Canvas // shaded page slice, reused while posters slide over it
+	bandPage    *gfx.Canvas
+	bandPageKey string
+
+	// the page behind the grid: the backdrop of the item last lingered
+	// on, very faded, with the title and tabs composed over it
+	page, pagePrev *gfx.Canvas
+	pageKey        string
+	pageBg         string // which backdrop the page holds
+	fade           Fade
+	focusAt        time.Time
+	lingerArt      string
+	blob           *gfx.Canvas // the abstract page for the lingered item's palette
+	blobFor        [4]uint32
+	blobBusy       bool
+}
+
+// LingerRest is how long the cursor must rest before the page follows it.
+const LingerRest = 2 * time.Second
+
+const (
+	WallArtBright = 44 // of 255: the backdrop is barely there
+)
+
+// Wall posters: four across, the focused row whole under the tabs, a
+// scrollbar at the right edge.
+const (
+	WallPW       = 120
+	WallPH       = 160
+	WallGap      = 16
+	WallPitch    = WallPW + WallGap
+	WallCols     = 4
+	WallRowPitch = WallPH + WallGap
+	WallTabsY    = SafeY + 30
+	WallPeek     = 12 // of the row above shows
+	WallY0       = SafeY + 96
+	WallTop      = WallY0 - WallGap - WallPeek // where posters start to show
+	WallBandY    = SafeBottom - 62             // the info band: from here to the bottom of the frame
+	WallBandH    = 480 - WallBandY
+	WallBandX    = SafeX                        // it spans the posters
+	WallBandW    = WallCols*WallPitch - WallGap // 528
+	WallPeekTop  = WallTabsY + 30               // peeking rows show from under the tabs
+	WallBarW     = 4
+	WallBarX     = SafeX + SafeW - WallBarW
+)
+
+const WallPrefetchRows = 3 // in both directions once the focused row rests
+
+type wallView struct {
+	name  string
+	path  string // with %s for the section key
+	query url.Values
+	az    bool
+}
+
+var wallViews = []wallView{
+	{"A to Z", "/library/sections/%s/all", url.Values{"sort": {"titleSort"}}, true},
+	{"Recently Added", "/library/sections/%s/all", url.Values{"sort": {"addedAt:desc"}}, false},
+	{"Recently Released", "/library/sections/%s/all", url.Values{"sort": {"originallyAvailableAt:desc"}}, false},
+	{"Continue Watching", "/hubs/sections/%s/continueWatching/items", nil, false},
+}
+
+// NewWall opens a section in its A to Z view.
+func NewWall(app *App, s plex.Section) *Wall { return NewWallView(app, s, 0) }
+
+// NewWallView opens a section in one of its views.
+func NewWallView(app *App, s plex.Section, view int) *Wall {
+	w := &Wall{app: app, section: s, view: view}
+	w.band = gfx.NewCanvas(WallBandW, WallBandH)
+	w.load()
+	return w
+}
+
+func (w *Wall) load() {
+	v := wallViews[w.view]
+	q := url.Values{}
+	for k, vals := range v.query {
+		q[k] = vals
+	}
+	var filter func(*plex.Item) bool
+	if w.app.Cfg != nil && w.app.Cfg.FourThree && v.az {
+		filter = w.app.Keep
+	}
+	path := strings.Replace(v.path, "%s", w.section.Key, 1)
+	w.pager = w.app.pager(path, q, filter)
+	w.letters = nil
+	if v.az && filter == nil {
+		go func() {
+			ls, err := w.app.Plex.FirstChars(w.section.Key, q)
+			if err == nil {
+				w.letters = ls
+			}
+		}()
+	}
+	w.cur = 0
+	w.rowY.Set(0)
+	w.bandKey = ""
+}
+
+func (w *Wall) total() int {
+	t := w.pager.Total()
+	if t < 0 {
+		return 0
+	}
+	return t
+}
+
+// Key handles one input event.
+func (w *Wall) Key(ev input.Event, now time.Time) {
+	n := w.total()
+	if ev.Release {
+		w.rowY.Settle(now)
+		return
+	}
+	if w.tabs {
+		switch ev.Key {
+		case input.Up:
+			return
+		case input.Left:
+			if w.view > 0 {
+				w.view--
+				w.load()
+			}
+		case input.Right:
+			if w.view < len(wallViews)-1 {
+				w.view++
+				w.load()
+			}
+		case input.Down, input.Enter:
+			w.tabs = false
+		}
+		return
+	}
+	switch ev.Key {
+	case input.Left:
+		if w.cur > 0 {
+			w.cur--
+		}
+	case input.Right:
+		if w.cur < n-1 {
+			w.cur++
+		}
+	case input.Up:
+		if w.cur < WallCols {
+			// above the first row: the view tabs
+			w.tabs = true
+			return
+		}
+		w.cur -= WallCols
+	case input.Down:
+		if w.cur+WallCols < n {
+			w.cur += WallCols
+		} else if w.cur/WallCols < (n-1)/WallCols {
+			w.cur = n - 1
+		}
+	case input.JumpBack:
+		w.jump(-1)
+	case input.JumpFwd:
+		w.jump(1)
+	case input.Enter:
+		if it := w.pager.Get(w.cur); it != nil {
+			w.app.Open(it, false)
+		}
+	}
+	if w.cur >= n && n > 0 {
+		w.cur = n - 1
+	}
+	w.pager.Want(w.cur)
+	w.focusAt = now
+	w.rowY.Move(float64(w.cur/WallCols*WallRowPitch), now, ev.Repeat)
+}
+
+// Back moves the cursor up to the view tabs from anywhere in the grid;
+// a second Back leaves the wall.
+func (w *Wall) Back() bool {
+	if w.tabs {
+		return false
+	}
+	w.tabs = true
+	return true
+}
+
+// letterIndex is the A-Z index: the server's, or one built from a
+// filtered walk once it has finished.
+func (w *Wall) letterIndex() []plex.Letter {
+	if len(w.letters) > 0 {
+		return w.letters
+	}
+	if wallViews[w.view].az && w.pager.Filtered() && w.pager.Done() {
+		w.letters = w.pager.Letters()
+	}
+	return w.letters
+}
+
+// jump moves a letter (A to Z views) or a screen otherwise.
+func (w *Wall) jump(dir int) {
+	n := w.total()
+	letters := w.letterIndex()
+	if len(letters) == 0 {
+		w.cur += dir * WallCols * 2
+		if w.cur < 0 {
+			w.cur = 0
+		}
+		if w.cur > n-1 {
+			w.cur = n - 1
+		}
+		return
+	}
+	// letter offsets from the first-character index
+	off := 0
+	starts := make([]int, len(letters))
+	for i, l := range letters {
+		starts[i] = off
+		off += l.Size
+	}
+	li := 0
+	for i := range starts {
+		if starts[i] <= w.cur {
+			li = i
+		}
+	}
+	li += dir
+	if li < 0 {
+		li = 0
+	}
+	if li >= len(starts) {
+		li = len(starts) - 1
+	}
+	w.cur = starts[li]
+}
+
+// Refresh re-reads one item after playback.
+func (w *Wall) Refresh(it *plex.Item) {
+	if fresh, err := w.app.Plex.Item(it.RatingKey); err == nil {
+		*it = *fresh
+	}
+}
+
+// Draw paints the wall.
+func (w *Wall) Draw(c *gfx.Canvas, now time.Time) bool {
+	n := w.total()
+	oy := round(w.rowY.At(now))
+	rows := (n + WallCols - 1) / WallCols
+	firstRow := max(0, (oy-WallRowPitch)/WallRowPitch)
+	w.holes = w.holes[:0]
+	w.fading = false
+	page, pageAnim := w.drawPage(c, now)
+	// the band goes first: it is composed from the posters under it
+	w.composeBand(page, now, oy)
+	for r := firstRow; r <= firstRow+4 && r < rows; r++ {
+		y := WallY0 + r*WallRowPitch - oy
+		if y > c.H {
+			break
+		}
+		for col := 0; col < WallCols; col++ {
+			i := r*WallCols + col
+			if i >= n {
+				break
+			}
+			x := SafeX + col*WallPitch
+			it := w.pager.Get(i)
+			w.drawPoster(c, it, x, y, i == w.cur)
+		}
+	}
+	c.Blit(WallBandX, WallBandY, &gfx.Image{W: w.band.W, H: w.band.H, Pix: w.band.Pix})
+	w.holes = append(w.holes, gfx.Rect{X: WallBandX, Y: WallBandY, W: WallBandW, H: WallBandH})
+	c.BlitExcept(page, w.holes)
+	// a scrollbar down the right edge, the letter (or the count) beside its handle
+	if rows > 1 {
+		trackY, trackH := WallTop, SafeBottom-WallTop
+		thumbH := max(20, trackH/rows)
+		thumbY := trackY + (trackH-thumbH)*(w.cur/WallCols)/(rows-1)
+		c.Fill(WallBarX, trackY, WallBarW, trackH, gfx.Bar)
+		c.Fill(WallBarX, thumbY, WallBarW, thumbH, gfx.GreyLo)
+		if s := w.marker(n); s != "" {
+			f := w.app.F.SmallBold
+			w.app.textOver(c, page, WallBarX-10-f.Width(s), min(max(thumbY+thumbH/2-f.Height()/2, trackY), SafeBottom-f.Height()), f, gfx.GreyLo, s)
+		}
+	}
+	if err := w.pager.Err(); err != nil {
+		w.app.textOver(c, page, SafeX, WallY0, w.app.F.Body, gfx.GreyHi, "Cannot load this library.")
+		w.app.textOver(c, page, SafeX, WallY0+30, w.app.F.Small, gfx.GreyLo, w.app.F.Small.Fit(err.Error(), SafeW))
+	} else if w.pager.Total() < 0 {
+		w.app.textOver(c, page, SafeX, WallY0, w.app.F.Body, gfx.GreyLo, "Loading...")
+	} else if n == 0 {
+		w.app.textOver(c, page, SafeX, WallY0, w.app.F.Body, gfx.GreyLo, "Nothing here.")
+	}
+	if !w.rowY.Running(now) {
+		w.prefetchRows()
+	}
+	return w.rowY.Running(now) || w.fading || pageAnim
+}
+
+// Queue far rows first so the nearest missing rows are served first. Drawing
+// has already requested the visible posters, which have higher priority.
+func (w *Wall) prefetchRows() {
+	n := w.total()
+	row := w.cur / WallCols
+	for distance := WallPrefetchRows; distance >= 1; distance-- {
+		for _, r := range []int{row - distance, row + distance} {
+			if r < 0 {
+				continue
+			}
+			for i := r * WallCols; i < (r+1)*WallCols && i < n; i++ {
+				if it := w.pager.Get(i); it != nil {
+					w.app.Art.Prefetch(it.Thumb, WallPW, WallPH)
+				}
+			}
+		}
+	}
+}
+
+// drawPage prepares the page shared by the grid and the title strip: the
+// backdrop of the item lingered on (once the cursor has rested), the
+// section title with its size, and the view tabs. It is recomposed when
+// any of those change, cross-fading between backdrops.
+func (w *Wall) drawPage(c *gfx.Canvas, now time.Time) (*gfx.Canvas, bool) {
+	// the page follows the cursor only after a long rest and never while
+	// the grid moves; the gradient is made off-thread and lands via Later
+	if it := w.pager.Get(w.cur); it != nil && it.Colors != [4]uint32{} && !w.blobBusy &&
+		now.Sub(w.focusAt) >= LingerRest && !w.rowY.Running(now) && it.Colors != w.blobFor {
+		w.blobBusy = true
+		cols := it.Colors
+		go func() {
+			page := blobPage(c.W, c.H, cols)
+			w.app.Later(func() {
+				w.blob, w.blobFor, w.blobBusy = page, cols, false
+			})
+		}()
+	}
+	img := (*gfx.Image)(nil)
+	if w.blob != nil {
+		img = &gfx.Image{W: w.blob.W, H: w.blob.H, Pix: w.blob.Pix}
+	}
+	key := itoa(w.view)
+	if w.blob != nil {
+		key += "|" + itoa(int(w.blobFor[0])) + "." + itoa(int(w.blobFor[2]))
+	}
+	if w.tabs {
+		key += "|tabs"
+	}
+	total := w.app.pager("/library/sections/"+w.section.Key+"/all", url.Values{"sort": {"titleSort"}}, nil).Total()
+	key += "|" + itoa(total)
+	if key != w.pageKey {
+		w.fade.Done()
+		w.page, w.pagePrev = w.pagePrev, w.page
+		if w.page == nil {
+			w.page = gfx.NewCanvas(c.W, c.H)
+		}
+		w.compose(w.page, img, total)
+		bg := ""
+		if w.blob != nil {
+			bg = itoa(int(w.blobFor[0])) + "." + itoa(int(w.blobFor[2]))
+		}
+		if w.pagePrev != nil && bg != w.pageBg {
+			w.fade.StartFor(w.pagePrev, w.page, now, 600*time.Millisecond) // a new palette: slow fade
+		}
+		w.pageBg = bg
+		w.pageKey = key
+	}
+	show, fading := w.fade.Frame(now)
+	if !fading {
+		show = w.page
+	}
+	return show, fading
+}
+
+func (w *Wall) compose(c *gfx.Canvas, img *gfx.Image, total int) {
+	if img != nil {
+		c.Blit(0, 0, img)
+	} else {
+		c.Fill(0, 0, c.W, c.H, gfx.Bg)
+	}
+	f := w.app.F
+	tx := f.Body.Width(w.section.Title)
+	c.Text(SafeX, SafeY-2, f.Body, gfx.GreyHi, f.Body.Fit(w.section.Title, SafeW-80))
+	if total > 0 {
+		c.Text(SafeX+min(tx, SafeW-80)+14, SafeY+2, f.SmallBold, gfx.GreyLo, itoa(total))
+	}
+	// view tabs under the title; the current one underlined in amber and
+	// framed like a focused tile while the cursor is on the tabs
+	x := SafeX
+	ty := WallTabsY
+	for i, v := range wallViews {
+		col := gfx.GreyLo
+		if i == w.view {
+			col = gfx.GreyHi
+			if w.tabs {
+				col = gfx.White
+			}
+		}
+		tw := f.SmallBold.Width(v.name)
+		c.Text(x, ty, f.SmallBold, col, v.name)
+		if i == w.view {
+			c.Fill(x, ty+f.SmallBold.Height(), tw, 2, gfx.Amber)
+			if w.tabs {
+				c.Frame(x-8, ty-4, tw+16, f.SmallBold.Height()+12, FocusT, gfx.GreyHi)
+			}
+		}
+		x += tw + 26
+	}
+}
+
+// marker is what rides beside the scrollbar handle: the letter in A to Z
+// views, the position otherwise.
+func (w *Wall) marker(n int) string {
+	if n == 0 {
+		return ""
+	}
+	if wallViews[w.view].az {
+		if it := w.pager.Get(w.cur); it != nil && it.SortLabel() != "" {
+			return strings.ToUpper(it.SortLabel()[:1])
+		}
+		return ""
+	}
+	s := itoa(w.cur+1) + " / " + itoa(n)
+	if w.pager.Filtered() && !w.pager.Done() {
+		s += "+"
+	}
+	return s
+}
+
+// composeBand paints the info band: the posters under it dimmed further,
+// and the focused item's title and facts over them.
+func (w *Wall) composeBand(page *gfx.Canvas, now time.Time, oy int) {
+	if w.bandBase == nil {
+		w.bandBase = gfx.NewCanvas(WallBandW, WallBandH)
+	}
+	if w.bandPage != page || w.bandPageKey != w.pageKey {
+		for yy := 0; yy < WallBandH; yy++ {
+			so := ((WallBandY+yy)*page.W + WallBandX) * 4
+			copy(w.bandBase.Pix[yy*WallBandW*4:(yy+1)*WallBandW*4], page.Pix[so:so+WallBandW*4])
+		}
+		w.bandBase.FillAlpha(0, 0, WallBandW, WallBandH, gfx.Bg, 215)
+		w.bandPage, w.bandPageKey = page, w.pageKey
+		w.bandKey = ""
+	}
+	n := w.total()
+	it := w.pager.Get(w.cur)
+	key := itoa(oy) + "|" + itoa(w.cur)
+	if it != nil {
+		key += "|" + it.RatingKey + "|" + itoa(it.ViewCount) + "|" + itoa(it.ViewOffset)
+	}
+	// which posters are under the band, and whether they have landed
+	rowUnder := (oy + WallBandY - WallY0) / WallRowPitch
+	for r := rowUnder - 1; r <= rowUnder+1; r++ {
+		if r < 0 {
+			continue
+		}
+		y := WallY0 + r*WallRowPitch - oy - WallBandY
+		if y >= WallBandH || y+WallPH <= 0 {
+			continue
+		}
+		for col := 0; col < WallCols; col++ {
+			i := r*WallCols + col
+			if i >= n {
+				break
+			}
+			if p := w.pager.Get(i); p != nil {
+				if img := w.app.Art.wallBand(p.Thumb); img != nil {
+					key += "|" + itoa(i)
+				}
+			}
+		}
+	}
+	if key == w.bandKey {
+		return
+	}
+	w.bandKey = key
+	b := w.band
+	b.Copy(w.bandBase)
+	for r := rowUnder - 1; r <= rowUnder+1; r++ {
+		if r < 0 {
+			continue
+		}
+		y := WallY0 + r*WallRowPitch - oy - WallBandY
+		if y >= b.H || y+WallPH <= 0 {
+			continue
+		}
+		for col := 0; col < WallCols; col++ {
+			i := r*WallCols + col
+			if i >= n {
+				break
+			}
+			p := w.pager.Get(i)
+			if p == nil {
+				continue
+			}
+			if img := w.app.Art.wallBand(p.Thumb); img != nil {
+				b.Blit(col*WallPitch, y, img)
+			} else {
+				b.Blit(col*WallPitch, y, wallBandPlaceholder)
+			}
+		}
+	}
+	if it == nil {
+		return
+	}
+	f := w.app.F
+	title := it.Title
+	if it.Type == "episode" {
+		title = it.GrandTitle
+	}
+	b.Text(12, 10, f.Body, gfx.GreyHi, f.Body.Fit(title, b.W-24))
+	dots(b, 12, 10+f.Body.Height()+2, f.SmallBold, gfx.GreyLo, heroFacts(it), b.W-24)
+}
+
+// Apply exactly the strip's existing tint once, off the drawing thread.
+func wallBandImage(img *gfx.Image) *gfx.Image {
+	c := gfx.NewCanvas(img.W, img.H)
+	c.Blit(0, 0, img)
+	c.FillAlpha(0, 0, c.W, c.H, gfx.Bg, 215)
+	return &gfx.Image{W: c.W, H: c.H, Pix: c.Pix}
+}
+
+var wallBandPlaceholder = func() *gfx.Image {
+	c := gfx.NewCanvas(WallPW, WallPH)
+	c.Fill(0, 0, c.W, c.H, gfx.Bar)
+	return wallBandImage(&gfx.Image{W: c.W, H: c.H, Pix: c.Pix})
+}()
+
+// drawPoster paints one poster clipped to the grid's band and records the
+// painted area as a hole for the background fill. What lies under the
+// info band is left to it.
+func (w *Wall) drawPoster(c *gfx.Canvas, it *plex.Item, x, y int, focus bool) {
+	// peeking rows may run into the overscan: only the tabs bound them above
+	cy0, cy1 := WallPeekTop, c.H
+	// the band covers part of the next row
+	if y < WallBandY+WallBandH && y+WallPH > WallBandY {
+		if y < WallBandY {
+			cy1 = min(cy1, WallBandY)
+		} else {
+			cy0 = max(cy0, WallBandY+WallBandH)
+		}
+	}
+	hy0, hy1 := max(y, cy0), min(y+WallPH, cy1)
+	if hy0 >= hy1 {
+		return
+	}
+	whole := y >= cy0 && y+WallPH <= cy1
+	var img *gfx.Image
+	var age time.Duration
+	if it != nil {
+		img, age = w.app.Art.GetAge(it.Thumb, WallPW, WallPH)
+	}
+	w.holes = append(w.holes, gfx.Rect{X: x, Y: hy0, W: WallPW, H: hy1 - hy0})
+	if img != nil {
+		if age < FadeIn {
+			c.BlendSolidClip(x, y, img, gfx.Bg, 256-int(age*256/FadeIn), 0, cy0, c.W, cy1-cy0)
+			w.fading = true
+		} else {
+			c.BlitClip(x, y, img, 0, cy0, c.W, cy1-cy0)
+		}
+	} else {
+		c.Fill(x, hy0, WallPW, hy1-hy0, gfx.Bar)
+		if it != nil && whole {
+			f := w.app.F.SmallBold
+			lines := wrap(f, it.Title, WallPW-16, 4)
+			ty := y + WallPH/2 - len(lines)*f.Height()/2
+			for _, l := range lines {
+				w.app.textCenterOn(c, x+WallPW/2, ty, f, gfx.GreyLo, gfx.Bar, l)
+				ty += f.Height()
+			}
+		}
+	}
+	if !whole || it == nil {
+		return
+	}
+	w.app.badge(c, it, x, y, WallPW, WallPH)
+	if focus {
+		c.Frame(x-FocusPad, y-FocusPad, WallPW+2*FocusPad, WallPH+2*FocusPad, FocusT, gfx.GreyHi)
+		w.holes = append(w.holes, frameHoles(x, y, WallPW, WallPH)...)
+	}
+}
+
+// frameHoles are the four bars of a focus frame around a tile at x,y:
+// exactly the FocusT-thick lines Frame paints, so the gap between the
+// frame and the tile is filled by the background pass like everything else.
+func frameHoles(x, y, w, h int) []gfx.Rect {
+	ox, oy, ow, oh := x-FocusPad, y-FocusPad, w+2*FocusPad, h+2*FocusPad
+	return []gfx.Rect{
+		{X: ox, Y: oy, W: ow, H: FocusT},
+		{X: ox, Y: oy + oh - FocusT, W: ow, H: FocusT},
+		{X: ox, Y: oy + FocusT, W: FocusT, H: oh - 2*FocusT},
+		{X: ox + ow - FocusT, Y: oy + FocusT, W: FocusT, H: oh - 2*FocusT},
+	}
+}

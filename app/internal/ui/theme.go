@@ -1,0 +1,167 @@
+package ui
+
+import (
+	"context"
+	"encoding/binary"
+	"io"
+	"os"
+	"os/exec"
+	"syscall"
+	"time"
+
+	"plexcrt/internal/plex"
+)
+
+const themeGain = 0.275 // half the previous 0.55 level
+
+// Theme owns both children. Stop waits until ALSA has been released, including
+// when decoding, network access or an audio write stalls.
+type Theme struct {
+	key    string
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (t *Theme) Stop() {
+	if t.cancel != nil {
+		t.cancel()
+		<-t.done
+		t.cancel = nil
+	}
+	t.key = ""
+}
+
+func (t *Theme) Select(c *plex.Client, key, path string) {
+	if key == t.key {
+		return
+	} // includes a theme that already finished: play once
+	t.Stop()
+	if key == "" || c == nil {
+		return
+	}
+	t.key = key
+	ctx, cancel := context.WithCancel(context.Background())
+	t.cancel, t.done = cancel, make(chan struct{})
+	go func() {
+		defer close(t.done)
+		file, err := c.ThemeFile(ctx, key, path)
+		if err != nil || ctx.Err() != nil {
+			return
+		}
+		playTheme(ctx, file)
+	}()
+}
+
+func playTheme(ctx context.Context, file string) {
+	playThemeCommands(ctx, func(hard context.Context) (*exec.Cmd, *exec.Cmd) {
+		decode := exec.CommandContext(hard, os.Getenv("PLEX_FFMPEG"),
+			"-nostdin", "-v", "error", "-i", file, "-f", "s16le", "-ac", "2", "-ar", "48000", "pipe:1")
+		output := exec.CommandContext(hard, "/usr/bin/aplay", "-q", "-t", "raw", "-f", "S16_LE",
+			"-c", "2", "-r", "48000", "--buffer-time=40000", "--period-time=10000", "-")
+		return decode, output
+	})
+}
+
+func playThemeCommands(ctx context.Context, commands func(context.Context) (*exec.Cmd, *exec.Cmd)) {
+	hard, kill := context.WithCancel(context.Background())
+	defer kill()
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-finished:
+			return
+		}
+		timer := time.NewTimer(500 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			kill()
+		case <-finished:
+		}
+	}()
+	decode, output := commands(hard)
+	pcm, err := decode.StdoutPipe()
+	if err != nil {
+		return
+	}
+	defer pcm.Close()
+	audio, err := output.StdinPipe()
+	if err != nil {
+		return
+	}
+	defer audio.Close()
+	// Bound queued PCM to about 21 ms; a default 64 KB pipe would delay a
+	// navigation fade by a third of a second before ALSA even sees it.
+	if f, ok := audio.(*os.File); ok {
+		syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), 1031 /* F_SETPIPE_SZ */, 4096)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if err = output.Start(); err != nil {
+		return
+	}
+	defer output.Wait() // always reap aplay before Stop returns
+	if err = decode.Start(); err != nil {
+		kill()
+		return
+	}
+	defer func() { decode.Process.Kill(); decode.Wait() }()
+	buf := make([]byte, 480*4) // ten milliseconds, stereo samples share one gain
+	gain := 0.0
+	for {
+		n, readErr := io.ReadFull(pcm, buf)
+		n -= n % 4
+		stopping := ctx.Err() != nil
+		for i := 0; i < n; i += 4 {
+			if stopping {
+				gain = max(0, gain-themeGain/7200)
+			} else {
+				gain = min(themeGain, gain+themeGain/12000)
+			}
+			for ch := 0; ch < 4; ch += 2 {
+				v := int16(binary.LittleEndian.Uint16(buf[i+ch:]))
+				binary.LittleEndian.PutUint16(buf[i+ch:], uint16(int16(float64(v)*gain)))
+			}
+		}
+		if n > 0 {
+			if _, err = audio.Write(buf[:n]); err != nil {
+				kill()
+				return
+			}
+		}
+		if readErr != nil || (stopping && gain == 0) {
+			audio.Close()
+			return
+		}
+	}
+}
+
+// Dialogs within a show inherit that show's music; navigation pages do not.
+func (a *App) syncTheme() {
+	if a.Cfg == nil || a.Cfg.NoTheme || a.Plex == nil {
+		a.theme.Stop()
+		return
+	}
+	var key, path string
+	for i := len(a.stack) - 1; i >= 0; i-- {
+		switch s := a.stack[i].(type) {
+		case *Show:
+			key, path = s.item.RatingKey, s.item.Theme
+		case *Home:
+			if s.fixed != nil {
+				key, path = s.fixed.RatingKey, s.fixed.Theme
+			}
+		case *Preplay:
+			if s.item.Type == "episode" {
+				key = s.item.GrandKey
+			}
+		case *Chooser, *FullText:
+			continue
+		}
+		break
+	}
+	a.theme.Select(a.Plex, key, path)
+}
