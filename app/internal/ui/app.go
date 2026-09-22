@@ -847,7 +847,7 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 			}
 			if cadenceMissed {
 				late++
-				a.Log.Printf("missed show transition cadence")
+				a.Log.Printf("missed animation cadence")
 			} else if waited && !cadenced && a.Out.Missed() {
 				late++
 				dd, into := a.Out.Late()
@@ -867,6 +867,12 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 func (a *App) pacedTransition() bool {
 	if _, ok := a.Out.(cadencePresenter); !ok {
 		return false
+	}
+	if d, ok := a.top().(*Drawer); ok {
+		return d.animating
+	}
+	if h, ok := a.top().(*Home); ok && h.home {
+		return h.animating
 	}
 	v, ok := a.top().(*Show)
 	return ok && v.pacedTransition()

@@ -12,15 +12,17 @@ import (
 // Drawer is the menu: a panel that slides in down the left over the home
 // screen, which shows dimmed behind it. Home, the libraries, Options.
 type Drawer struct {
-	app     *App
-	items   []*plex.Item
-	cur     int
-	back    *gfx.Image  // the home screen, dimmed
-	page    *gfx.Canvas // the composed drawer over it
-	key     string      // what the page was composed for
-	openAt  time.Time
-	closeAt time.Time // set while sliding out; Pop follows
-	then    func()    // runs once the drawer has slid out
+	app       *App
+	items     []*plex.Item
+	cur       int
+	back      *gfx.Image  // the home screen, dimmed
+	page      *gfx.Canvas // the drawer panel, composed only when selection changes
+	key       string      // what the page was composed for
+	openAt    time.Time
+	closeAt   time.Time // set while sliding out; Pop follows
+	closeFrom int
+	animating bool
+	then      func() // runs once the drawer has slid out
 }
 
 const (
@@ -32,11 +34,18 @@ const (
 
 // NewDrawer composes the menu over a snapshot of the screen beneath.
 func NewDrawer(app *App, under Screen, items []*plex.Item) *Drawer {
-	d := &Drawer{app: app, items: items, openAt: time.Now()}
+	d := &Drawer{app: app, items: items, animating: true}
 	snap := gfx.NewCanvas(720, 480)
-	under.Draw(snap, d.openAt)
-	d.back = (&gfx.Image{W: snap.W, H: snap.H, Pix: snap.Pix}).Dimmed(BackBright)
-	d.page = gfx.NewCanvas(720, 480)
+	under.Draw(snap, time.Now())
+	d.back = &gfx.Image{W: snap.W, H: snap.H, Pix: snap.Pix}
+	// Dim in place with the vectorized blend; avoid a second full-frame
+	// allocation and a scalar multiply for every byte before opening.
+	snap.BlendSolidClip(0, 0, d.back, 0, 256-BackBright, 0, 0, snap.W, snap.H)
+	d.page = gfx.NewCanvas(DrawerW, 480)
+	d.compose()
+	d.key = itoa(d.cur)
+	// Preparation must not consume the first part of the slide.
+	d.openAt = time.Now()
 	return d
 }
 
@@ -45,7 +54,10 @@ func (d *Drawer) Close(then func()) {
 	if !d.closeAt.IsZero() {
 		return
 	}
-	d.closeAt = time.Now()
+	now := time.Now()
+	d.closeFrom, _ = d.offset(now)
+	d.closeAt = now
+	d.animating = true
 	d.then = then
 }
 
@@ -88,7 +100,7 @@ func (d *Drawer) offset(now time.Time) (int, bool) {
 			return -DrawerW, false
 		}
 		moving = true
-		p = 1 - math.Pow(p, 3) // ease in going out
+		return d.closeFrom - round(float64(DrawerW+d.closeFrom)*math.Pow(max(0, p), 3)), true // ease in going out
 	} else {
 		p = float64(now.Sub(d.openAt)) / float64(animDur)
 		if p >= 1 {
@@ -101,9 +113,10 @@ func (d *Drawer) offset(now time.Time) (int, bool) {
 	return -DrawerW + int(float64(DrawerW)*p+0.5), moving
 }
 
-// Draw copies the composed page in, recomposing it when anything moved.
+// Draw slides the prepared panel, copying each output pixel just once.
 func (d *Drawer) Draw(c *gfx.Canvas, now time.Time) bool {
 	off, moving := d.offset(now)
+	d.animating = moving
 	if !d.closeAt.IsZero() && !moving {
 		// slid out: leave; the screen beneath draws the next frame
 		then := d.then
@@ -114,27 +127,29 @@ func (d *Drawer) Draw(c *gfx.Canvas, now time.Time) bool {
 		}
 		return d.app.top().Draw(c, now)
 	}
-	key := itoa(off) + "|" + itoa(d.cur)
+	key := itoa(d.cur)
 	if key != d.key {
-		d.compose(off)
+		d.compose()
 		d.key = key
 	}
-	c.Copy(d.page)
+	edge := max(0, min(c.W, DrawerW+off))
+	c.BlitClip(0, 0, d.back, edge, 0, c.W-edge, c.H)
+	panel := gfx.Image{W: d.page.W, H: d.page.H, Pix: d.page.Pix}
+	c.Blit(off, 0, &panel)
 	return moving
 }
 
-func (d *Drawer) compose(off int) {
+func (d *Drawer) compose() {
 	c := d.page
-	c.Blit(0, 0, d.back)
-	c.Fill(off, 0, DrawerW, c.H, gfx.Bg)
-	d.app.Mark.Place(c, off+MenuX, SafeY-8)
+	c.Fill(0, 0, c.W, c.H, gfx.Bg)
+	d.app.Mark.Place(c, MenuX, SafeY-8)
 	f := d.app.F.Body
 	y := DrawerY0
 	for i, it := range d.items {
 		col := gfx.GreyHi
 		if i == d.cur {
 			col = gfx.White
-			menuFocusBar(c, off+MenuX, y, f.Height())
+			menuFocusBar(c, MenuX, y, f.Height())
 		}
 		title := it.Title
 		if it.Type == "section" && d.app.Showcase {
@@ -144,7 +159,7 @@ func (d *Drawer) compose(off int) {
 				title = "Library"
 			}
 		}
-		c.Text(off+MenuX, y, f, col, f.Fit(title, DrawerW-MenuX-24))
+		c.Text(MenuX, y, f, col, f.Fit(title, DrawerW-MenuX-24))
 		y += DrawerRowH
 	}
 }

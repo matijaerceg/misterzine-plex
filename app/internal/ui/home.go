@@ -79,6 +79,9 @@ type Home struct {
 	fade           Fade
 	logo           logoLayer
 	focusAt        time.Time // when the focus last moved
+	preloadAfter   time.Time
+	artworkWarmed  bool
+	animating      bool // last draw; used to schedule home frames on vsync
 }
 
 // NewHome loads the initial rows synchronously.
@@ -260,6 +263,7 @@ func (h *Home) applyHome(hubs []*plex.Hub) {
 
 func (h *Home) setHubs(hubs []*plex.Hub) {
 	h.hubs = hubs
+	h.artworkWarmed = false
 	h.empty = len(hubs) == 0
 	if len(h.col) != len(hubs) {
 		h.col = make([]int, len(hubs))
@@ -294,6 +298,17 @@ func (h *Home) Key(ev input.Event, now time.Time) {
 			h.reload()
 		}
 		return
+	}
+	if h.home && (ev.Key == input.Left || ev.Key == input.Right) {
+		// Cover the initial key-repeat delay, then extend on every repeat.
+		delay := 600 * time.Millisecond
+		if ev.Release {
+			delay = HeroRest // let the final scroll and hero settle first
+		}
+		h.preloadAfter = now.Add(delay)
+		if h.app.Art != nil {
+			h.app.Art.DeferBackground(h.preloadAfter)
+		}
 	}
 	if ev.Release {
 		h.colX[h.row].Settle(now)
@@ -406,9 +421,11 @@ func (h *Home) Draw(c *gfx.Canvas, now time.Time) bool {
 	anim := h.drawPage(c, now)
 	t1 := time.Now()
 	anim = h.drawStrip(c, now) || anim
-	h.prefetchPosters()
-	h.prefetchBackdrops(c.W, c.H)
-	h.warmHomeArtwork(c.W, c.H)
+	if !now.Before(h.preloadAfter) {
+		h.prefetchPosters()
+		h.prefetchBackdrops(c.W, c.H)
+		h.warmHomeArtwork(c.W, c.H)
+	}
 	if h.fixed != nil {
 		if now.Sub(h.focusAt) < HeroRest {
 			anim = true // wake once the selection has settled
@@ -422,6 +439,7 @@ func (h *Home) Draw(c *gfx.Canvas, now time.Time) bool {
 	if d := time.Since(t0); d > 16*time.Millisecond {
 		h.app.Log.Printf("slow home frame: page %.1f ms, strip %.1f ms, fading %v, holes %d", float64(t1.Sub(t0))/1e6, float64(time.Since(t1))/1e6, h.pageFade().Running(), len(h.holes))
 	}
+	h.animating = anim
 	return anim
 }
 
@@ -462,7 +480,7 @@ func (h *Home) drawPage(c *gfx.Canvas, now time.Time) bool {
 		h.logoLayer().draw(c, h.page, now)
 		return true
 	}
-	img, _ := h.app.Art.GetBackdrop(art, c.W, c.H, HeroBright, HeroFade)
+	img, _, _ := h.app.Art.get(h.backdropRequest(art, c.W, c.H))
 	if img != nil {
 		key += "|art"
 	}
@@ -732,8 +750,9 @@ func (h *Home) prefetchBackdrops(w, height int) {
 		for j := max(0, first); j <= min(len(h.hubs[row].Items)-1, last); j++ {
 			it := h.hubs[row].Items[j]
 			if it.Type != "more" {
-				h.app.Art.get(artReq{thumb: heroArt(it), w: w, h: height,
-					bright: HeroBright, fade: HeroFade, prefetch: true})
+				req := h.backdropRequest(heroArt(it), w, height)
+				req.prefetch = true
+				h.app.Art.get(req)
 			}
 		}
 	}
@@ -742,7 +761,7 @@ func (h *Home) prefetchBackdrops(w, height int) {
 // Queue every home item, including distant rows and offscreen columns.
 // The loader deduplicates this persistent backlog and services it last.
 func (h *Home) warmHomeArtwork(w, height int) {
-	if !h.home || h.app.Art == nil {
+	if !h.home || h.app.Art == nil || h.artworkWarmed {
 		return
 	}
 	for _, hub := range h.hubs {
@@ -751,9 +770,14 @@ func (h *Home) warmHomeArtwork(w, height int) {
 				continue
 			}
 			h.app.Art.Warm(artReq{thumb: it.Thumb, w: PosterW, h: PosterH})
-			h.app.Art.Warm(artReq{thumb: heroArt(it), w: w, h: height, bright: HeroBright, fade: HeroFade})
+			h.app.Art.Warm(h.backdropRequest(heroArt(it), w, height))
 		}
 	}
+	h.artworkWarmed = true
+}
+
+func (h *Home) backdropRequest(thumb string, w, height int) artReq {
+	return artReq{thumb: thumb, w: w, h: height, bright: HeroBright, fade: HeroFade, homeBackdrop: h.home}
 }
 
 // drawStrip paints the focused row's posters, sliding and fading them in

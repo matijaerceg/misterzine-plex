@@ -19,18 +19,20 @@ import (
 // posters on screen come first and the ones scrolled past are never fetched.
 // The decoded set is bounded (LRU) so memory stays flat however far you scroll.
 type Art struct {
-	client *plex.Client
-	mu     sync.Mutex
-	cond   *sync.Cond
-	have   map[string]*artEntry
-	order  []string // LRU, oldest first
-	warm   []artReq // persistent, low-priority home-screen cache warming
-	warmed map[string]bool
-	wants  []artReq // pending, oldest first; workers take from the end
-	busy   map[string]bool
-	failed map[string]bool
-	frame  uint64 // bumped by Frame; wants carry the frame they were last asked in
-	Wake   chan struct{}
+	client          *plex.Client
+	mu              sync.Mutex
+	cond            *sync.Cond
+	have            map[string]*artEntry
+	order           []string // LRU, oldest first
+	warm            []artReq // persistent, low-priority home-screen cache warming
+	warmed          map[string]bool
+	wants           []artReq // pending, oldest first; workers take from the end
+	busy            map[string]bool
+	failed          map[string]bool
+	frame           uint64 // bumped by Frame; wants carry the frame they were last asked in
+	Wake            chan struct{}
+	backgroundUntil time.Time
+	backgroundTimer *time.Timer
 }
 
 type artEntry struct {
@@ -47,8 +49,10 @@ type artReq struct {
 	// a backdrop treatment: dimmed to bright/255 and faded into the
 	// background over its bottom fade px (0,0: none)
 	bright, fade int
+	homeBackdrop bool // home-only positioning and stronger poster-area gradient
 	asked        uint64
 	prefetch     bool // spare work: visible requests always go first
+	diskOnly     bool // whole-home warming downloads without decoding
 }
 
 // ArtCap bounds decoded pictures across visible and nearby rows, backdrops,
@@ -62,6 +66,9 @@ func (r artReq) key() string {
 	if r.logo {
 		return fmt.Sprintf("%s|%dx%d|logo", r.thumb, r.w, r.h)
 	}
+	if r.homeBackdrop {
+		return fmt.Sprintf("%s|%dx%d|home/%d/%d", r.thumb, r.w, r.h, r.bright, r.fade)
+	}
 	if r.fade > 0 {
 		return fmt.Sprintf("%s|%dx%d|%d/%d", r.thumb, r.w, r.h, r.bright, r.fade)
 	}
@@ -73,7 +80,7 @@ func NewArt(c *plex.Client, n int, wake chan struct{}) *Art {
 	a := &Art{client: c, have: map[string]*artEntry{}, busy: map[string]bool{}, failed: map[string]bool{}, Wake: wake}
 	a.cond = sync.NewCond(&a.mu)
 	for i := 0; i < n; i++ {
-		go a.worker()
+		go a.worker(i == n-1)
 	}
 	return a
 }
@@ -98,7 +105,33 @@ func (a *Art) Frame() {
 	a.mu.Unlock()
 }
 
-func (a *Art) worker() {
+// DeferBackground pauses speculative requests, but never visible artwork.
+// A deadline survives a lost key release without leaving preloading disabled.
+func (a *Art) DeferBackground(until time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.backgroundUntil = until
+	if a.backgroundTimer == nil {
+		a.backgroundTimer = time.AfterFunc(time.Until(until), func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if time.Now().Before(a.backgroundUntil) {
+				return
+			}
+			a.cond.Broadcast()
+			select {
+			case a.Wake <- struct{}{}:
+			default:
+			}
+		})
+	} else {
+		a.backgroundTimer.Reset(time.Until(until))
+	}
+}
+
+// Only one worker may start speculative work. The others remain available
+// for visible requests even while a slow preload is in flight.
+func (a *Art) worker(background bool) {
 	// decoding must never steal a field from the drawing loop: the worker
 	// keeps its own OS thread and lowers that thread's priority
 	runtime.LockOSThread()
@@ -108,7 +141,7 @@ func (a *Art) worker() {
 		var r artReq
 		for {
 			// newest want that is still current
-			if next, ok := a.nextWant(); ok {
+			if next, ok := a.nextRequest(background); ok {
 				r = next
 				goto found
 			}
@@ -119,9 +152,15 @@ func (a *Art) worker() {
 		a.busy[k] = true
 		a.mu.Unlock()
 
-		img, err := a.fetch(r)
+		var img *gfx.Image
+		var err error
+		if r.diskOnly {
+			_, err = a.fetchFile(r)
+		} else {
+			img, err = a.fetch(r)
+		}
 		var band *gfx.Image
-		if err == nil && r.w == WallPW && r.h == WallPH && !r.logo && r.fade == 0 {
+		if err == nil && !r.diskOnly && r.w == WallPW && r.h == WallPH && !r.logo && r.fade == 0 {
 			band = wallBandImage(img)
 		}
 
@@ -129,7 +168,7 @@ func (a *Art) worker() {
 		delete(a.busy, k)
 		if err != nil {
 			a.failed[k] = true
-		} else {
+		} else if !r.diskOnly {
 			a.have[k] = &artEntry{img: img, band: band, used: a.frame, at: time.Now()}
 			a.order = append(a.order, k)
 			a.evict()
@@ -144,7 +183,10 @@ func (a *Art) worker() {
 
 // nextWant is called under mu. Discard stale work, then take the newest
 // visible request, falling back to the newest nearby-row request.
-func (a *Art) nextWant() (artReq, bool) {
+func (a *Art) nextWant() (artReq, bool) { return a.nextRequest(true) }
+
+func (a *Art) nextRequest(background bool) (artReq, bool) {
+	background = background && !time.Now().Before(a.backgroundUntil)
 	keep := a.wants[:0]
 	for _, r := range a.wants {
 		if r.asked+wantTTL >= a.frame {
@@ -158,6 +200,9 @@ func (a *Art) nextWant() (artReq, bool) {
 			i = j
 			break
 		}
+	}
+	if !background && (i < 0 || keep[i].prefetch) {
+		return artReq{}, false
 	}
 	if i < 0 {
 		for len(a.warm) > 0 {
@@ -193,8 +238,9 @@ func (a *Art) Warm(r artReq) {
 	}
 	a.warmed[k] = true
 	r.prefetch = true
+	r.diskOnly = true
 	a.warm = append(a.warm, r)
-	a.cond.Signal()
+	a.cond.Broadcast()
 }
 
 // Prefetch warms a nearby poster without competing with queued visible art.
@@ -232,17 +278,20 @@ func (a *Art) evict() {
 // fetched at square pixels for the shape they will have on screen (a
 // poster box of 135x180 frame px is 135x203 square px) and squeezed
 // vertically here, so nothing is cropped; logos are fetched 8/9 as wide.
-func (a *Art) fetch(r artReq) (*gfx.Image, error) {
+func (a *Art) fetchFile(r artReq) (string, error) {
 	if r.logo {
-		path, err := a.client.Logo(r.thumb, r.w*8/9, r.h)
-		if err != nil {
-			return nil, err
-		}
-		return gfx.LoadFile(path)
+		return a.client.Logo(r.thumb, r.w*8/9, r.h)
 	}
-	path, err := a.client.Art(r.thumb, r.w, (r.h*9+4)/8)
+	return a.client.Art(r.thumb, r.w, (r.h*9+4)/8)
+}
+
+func (a *Art) fetch(r artReq) (*gfx.Image, error) {
+	path, err := a.fetchFile(r)
 	if err != nil {
 		return nil, err
+	}
+	if r.logo {
+		return gfx.LoadFile(path)
 	}
 	img, err := gfx.LoadFile(path)
 	if err != nil {
@@ -252,7 +301,9 @@ func (a *Art) fetch(r artReq) (*gfx.Image, error) {
 	if r.w == PosterW || r.w == WallPW {
 		img.Dim = img.Dimmed(WatchedBright)
 	}
-	if r.fade > 0 {
+	if r.homeBackdrop {
+		homeBackdropTreat(img, r.bright)
+	} else if r.fade > 0 {
 		fadeTreat(img, r.bright, r.fade)
 	}
 	return img, nil
@@ -277,6 +328,25 @@ func fadeTreat(img *gfx.Image, bright, fade int) {
 			row[i] = byte(b + (bb-b)*mix>>8)
 			row[i+1] = byte(g + (bg-g)*mix>>8)
 			row[i+2] = byte(r + (br-r)*mix>>8)
+		}
+	}
+}
+
+// Home art sits 12.5% higher. Its smooth, shorter gradient is almost dark
+// by the poster midline and reaches the background at y=350 on a 480-line
+// frame. Prepare it once on the artwork worker, never during animation.
+func homeBackdropTreat(img *gfx.Image, bright int) {
+	shift := img.H / 8
+	copy(img.Pix, img.Pix[shift*img.W*4:])
+	start, end := img.H*130/480, img.H*350/480
+	bb, bg, br := int(gfx.Bg&255), int(gfx.Bg>>8&255), int(gfx.Bg>>16&255)
+	for y := 0; y < img.H; y++ {
+		t := max(0, min(256, (y-start)*256/max(1, end-start)))
+		mix := t * t * (768 - 2*t) / (256 * 256) // smoothstep, with a tighter middle
+		row := img.Pix[y*img.W*4 : (y+1)*img.W*4]
+		for i := 0; i < len(row); i += 4 {
+			b, g, r := int(row[i])*bright/255, int(row[i+1])*bright/255, int(row[i+2])*bright/255
+			row[i], row[i+1], row[i+2] = byte(b+(bb-b)*mix/256), byte(g+(bg-g)*mix/256), byte(r+(br-r)*mix/256)
 		}
 	}
 }
@@ -341,7 +411,7 @@ func (a *Art) getImage(r artReq, band bool) (*gfx.Image, time.Duration, bool) {
 	// refresh an existing want (move it to the end: newest) or add one
 	for i := range a.wants {
 		if a.wants[i].thumb == thumb && a.wants[i].w == w && a.wants[i].h == h && a.wants[i].logo == r.logo &&
-			a.wants[i].fade == r.fade && a.wants[i].bright == r.bright {
+			a.wants[i].fade == r.fade && a.wants[i].bright == r.bright && a.wants[i].homeBackdrop == r.homeBackdrop {
 			// A background touch must not demote a visible want this frame.
 			if a.wants[i].asked == a.frame && !a.wants[i].prefetch {
 				r.prefetch = false
@@ -354,7 +424,7 @@ func (a *Art) getImage(r artReq, band bool) (*gfx.Image, time.Duration, bool) {
 	if len(a.wants) > 64 {
 		a.wants = a.wants[len(a.wants)-64:]
 	}
-	a.cond.Signal()
+	a.cond.Broadcast()
 	return nil, 0, false
 }
 

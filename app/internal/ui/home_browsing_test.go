@@ -116,3 +116,40 @@ func TestHomeWarmsEveryRowAndColumn(t *testing.T) {
 		t.Fatal("completed warming restarted")
 	}
 }
+
+func TestHomeWarmQueueRefreshesOnlyWhenRowsChange(t *testing.T) {
+	a := NewArt(nil, 0, nil)
+	h := &Home{app: &App{Art: a}, home: true}
+	hub := &plex.Hub{Items: []*plex.Item{{Thumb: "first"}}}
+	h.setHubs([]*plex.Hub{hub})
+	h.warmHomeArtwork(720, 480)
+	if !h.artworkWarmed {
+		t.Fatal("full scan was not marked complete")
+	}
+	hub.Items = append(hub.Items, &plex.Item{Thumb: "new"})
+	h.setHubs([]*plex.Hub{hub})
+	h.warmHomeArtwork(720, 480)
+	if len(a.warm) != 4 {
+		t.Fatalf("new artwork did not join backlog: %d", len(a.warm))
+	}
+}
+
+func TestHomeHoldDefersBackgroundUntilReleaseSettles(t *testing.T) {
+	a := NewArt(nil, 0, nil)
+	h := &Home{app: &App{Art: a}, home: true}
+	h.setHubs([]*plex.Hub{homeRow("row", "a", "b", "c")})
+	now := time.Now()
+	h.Key(input.Event{Key: input.Right}, now)
+	if !h.preloadAfter.After(now.Add(400 * time.Millisecond)) {
+		t.Fatal("pause does not cover initial key repeat delay")
+	}
+	h.Key(input.Event{Key: input.Right, Repeat: true}, now.Add(time.Second))
+	if !h.preloadAfter.After(now.Add(time.Second)) {
+		t.Fatal("held navigation did not extend pause")
+	}
+	released := now.Add(2 * time.Second)
+	h.Key(input.Event{Key: input.Right, Release: true}, released)
+	if h.preloadAfter != released.Add(HeroRest) {
+		t.Fatal("release did not allow final scroll to settle")
+	}
+}

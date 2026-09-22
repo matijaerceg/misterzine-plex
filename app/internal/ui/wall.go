@@ -410,8 +410,8 @@ func (w *Wall) compose(c *gfx.Canvas, img *gfx.Image, total int) {
 	if total > 0 && !w.app.Showcase {
 		c.Text(SafeX+min(tx, SafeW-80)+14, SafeY+2, f.SmallBold, gfx.GreyLo, itoa(total))
 	}
-	// view tabs under the title; the current one underlined in amber and
-	// framed like a focused tile while the cursor is on the tabs
+	// A clean underline identifies the active view. It brightens and thickens
+	// when navigation is on the tabs, without surrounding the label in a box.
 	x := SafeX
 	ty := WallTabsY
 	for i, v := range wallViews {
@@ -425,10 +425,11 @@ func (w *Wall) compose(c *gfx.Canvas, img *gfx.Image, total int) {
 		tw := f.SmallBold.Width(v.name)
 		c.Text(x, ty, f.SmallBold, col, v.name)
 		if i == w.view {
-			c.Fill(x, ty+f.SmallBold.Height(), tw, 2, gfx.Amber)
+			lineColor, lineH := gfx.GreyLo, 2
 			if w.tabs {
-				c.Frame(x-8, ty-4, tw+16, f.SmallBold.Height()+12, FocusT, gfx.GreyHi)
+				lineColor, lineH = gfx.Amber, 4
 			}
+			c.Fill(x, ty+f.SmallBold.Height()+4, tw, lineH, lineColor)
 		}
 		x += tw + 26
 	}
@@ -578,6 +579,9 @@ func (w *Wall) drawPoster(c *gfx.Canvas, it *plex.Item, x, y int, focus bool) {
 	var age time.Duration
 	if it != nil {
 		img, age = w.app.Art.GetAge(it.Thumb, WallPW, WallPH)
+		if focus && w.tabs && img != nil && img.Dim != nil {
+			img = img.Dim // reuse the loader's shaded copy; no per-frame dimming
+		}
 	}
 	w.holes = append(w.holes, gfx.Rect{X: x, Y: hy0, W: WallPW, H: hy1 - hy0})
 	if img != nil {
@@ -604,7 +608,11 @@ func (w *Wall) drawPoster(c *gfx.Canvas, it *plex.Item, x, y int, focus bool) {
 	}
 	w.app.badge(c, it, x, y, WallPW, WallPH)
 	if focus {
-		c.Frame(x-FocusPad, y-FocusPad, WallPW+2*FocusPad, WallPH+2*FocusPad, FocusT, gfx.GreyHi)
+		frameColor := gfx.GreyHi
+		if w.tabs {
+			frameColor = ChevronOff // retain the grid position without claiming focus
+		}
+		c.Frame(x-FocusPad, y-FocusPad, WallPW+2*FocusPad, WallPH+2*FocusPad, FocusT, frameColor)
 		w.holes = append(w.holes, frameHoles(x, y, WallPW, WallPH)...)
 	}
 }
