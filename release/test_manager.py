@@ -84,6 +84,21 @@ class InstallerTests(unittest.TestCase):
                 manager.install(self.card, self.package)
         self.assertEqual(manager.read_state(self.root)['current'], 'alpha-1')
 
+    def test_core_launch_keeps_browser_at_card_root(self):
+        import xml.etree.ElementTree as ET
+        folder = self.root / 'releases/alpha-1'
+        folder.mkdir(parents=True)
+        core = folder / 'MisterZine Plex Core.rbf'
+        core.write_bytes(b'core')
+        entry = manager.core_launch_entry(self.root, folder)
+        self.assertEqual(entry.parent, self.card)
+        self.assertEqual(ET.parse(entry).findtext('rbf'),
+                         'misterzine-plex/releases/alpha-1/MisterZine Plex Core')
+        core.rename(folder / 'MisterZine Plex.rbf')
+        manager.core_launch_entry(self.root, folder)
+        self.assertEqual(ET.parse(entry).findtext('rbf'),
+                         'misterzine-plex/releases/alpha-1/MisterZine Plex')
+
     def test_small_hdmi_framebuffer_is_enlarged_for_ring(self):
         params = self.base / 'framebuffer'
         params.mkdir()

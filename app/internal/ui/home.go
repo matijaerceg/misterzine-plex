@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -56,18 +57,21 @@ const (
 // Up and Down. The home screen's hero follows the focus; a show's page
 // pins the hero to the show and lists its seasons.
 type Home struct {
-	app   *App
-	view  *Show
-	hubs  []*plex.Hub
-	fixed *plex.Item // the hero item of a show page; nil: the focused item
-	home  bool       // the home screen: hamburger, Left at the edge opens the menu
-	row   int
-	col   []int
-	rowAt time.Time // when the focused row last changed (its posters fade in)
-	colX  []Anim    // per strip horizontal scroll in pixels
-	err   error
-	empty bool
-	holes []gfx.Rect // areas painted this frame, skipped by the page copy
+	app           *App
+	view          *Show
+	hubs          []*plex.Hub
+	fixed         *plex.Item // the hero item of a show page; nil: the focused item
+	refreshAt     time.Time
+	refreshResult chan homeResult
+	home          bool // the home screen: hamburger, Left at the edge opens the menu
+	row           int
+	col           []int
+	rowAt         time.Time // when the focused row last changed (its posters fade in)
+	rowY          Anim      // incoming row slides toward its resting position
+	colX          []Anim    // per strip horizontal scroll in pixels
+	err           error
+	empty         bool
+	holes         []gfx.Rect // areas painted this frame, skipped by the page copy
 
 	page, pagePrev *gfx.Canvas // composed page, and the one before it for the cross-fade
 	pageKey        string      // item + row + which pictures were in
@@ -77,7 +81,7 @@ type Home struct {
 	focusAt        time.Time // when the focus last moved
 }
 
-// NewHome loads the hubs synchronously (one request).
+// NewHome loads the initial rows synchronously.
 func NewHome(app *App) *Home {
 	h := &Home{app: app, home: true}
 	h.reload()
@@ -101,25 +105,43 @@ func (h *Home) focusSeason(i int) {
 // reload fetches the rows: Continue Watching, then each library's
 // recently added, fetched together.
 func (h *Home) reload() {
-	hubs, err := h.app.Plex.Hubs(30)
+	h.refreshResult = nil // discard any older background request
+	h.refreshAt = time.Now().Add(30 * time.Second)
+	hubs, err := fetchHome(h.app.Plex)
 	h.err = err
 	if err != nil {
 		h.app.Log.Printf("home: %v", err)
 		h.setHubs(nil)
 		return
 	}
-	if len(h.app.secs) == 0 {
-		h.app.loadSections()
+	h.applyHome(hubs)
+}
+
+type homeResult struct {
+	hubs []*plex.Hub
+	err  error
+}
+
+// fetchHome owns its data; the worker never reads or changes screen state.
+func fetchHome(client *plex.Client) ([]*plex.Hub, error) {
+	hubs, err := client.Hubs(30)
+	if err != nil {
+		return nil, err
 	}
-	secs := h.app.secs
+	secs, err := client.Sections()
+	if err != nil {
+		return nil, err
+	}
 	rows := make([]*plex.Hub, len(secs))
 	var wg sync.WaitGroup
+	errs := make([]error, len(secs))
 	for i, s := range secs {
 		wg.Add(1)
 		go func(i int, s plex.Section) {
 			defer wg.Done()
-			hub, err := h.app.Plex.SectionRecent(s.Key, 30)
+			hub, err := client.SectionRecent(s.Key, 30)
 			if err != nil || hub == nil {
+				errs[i] = err
 				return
 			}
 			name := "Recently Added"
@@ -133,11 +155,57 @@ func (h *Home) reload() {
 		}(i, s)
 	}
 	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, r := range rows {
 		if r != nil {
 			hubs = append(hubs, r)
 		}
 	}
+	return hubs, nil
+}
+
+// pollHome runs on the render thread, including while the screen is idle.
+func (h *Home) pollHome(now time.Time) {
+	if !h.home {
+		return
+	}
+	if h.refreshResult != nil {
+		select {
+		case result := <-h.refreshResult:
+			h.refreshResult = nil
+			h.refreshAt = now.Add(30 * time.Second)
+			if result.err != nil {
+				h.app.Log.Printf("home refresh: %v", result.err)
+				return // keep the last usable rows during a network outage
+			}
+			h.err = nil
+			h.applyHome(result.hubs)
+			h.app.dirty = true
+		default:
+		}
+		return
+	}
+	if now.Before(h.refreshAt) {
+		return
+	}
+	result := make(chan homeResult, 1)
+	h.refreshResult = result
+	client := h.app.Plex
+	go func() {
+		hubs, err := fetchHome(client)
+		result <- homeResult{hubs, err}
+		select {
+		case h.app.Wake <- struct{}{}:
+		default:
+		}
+	}()
+}
+
+func (h *Home) applyHome(hubs []*plex.Hub) {
 	// the user's filters (Options) apply to the rows
 	kept := hubs[:0]
 	for _, hub := range hubs {
@@ -152,7 +220,42 @@ func (h *Home) reload() {
 			kept = append(kept, hub)
 		}
 	}
+	if reflect.DeepEqual(h.hubs, kept) {
+		h.empty = len(kept) == 0
+		return
+	}
+	oldHubs, oldCol, oldScroll, oldRow := h.hubs, h.col, h.colX, h.row
+	h.col = make([]int, len(kept))
+	h.colX = make([]Anim, len(kept))
+	h.row = 0
+	for i, hub := range kept {
+		for j, old := range oldHubs {
+			if hub.Ident != old.Ident || hub.Key != old.Key || hub.Title != old.Title {
+				continue
+			}
+			if j == oldRow {
+				h.row = i
+			}
+			if oldCol[j] < len(old.Items) {
+				selected := old.Items[oldCol[j]]
+				h.col[i] = min(oldCol[j], len(hub.Items)-1)
+				for k, item := range hub.Items {
+					if item.RatingKey == selected.RatingKey && item.Key == selected.Key {
+						h.col[i] = k
+						break
+					}
+				}
+			}
+			first := round(oldScroll[j].Target()) / PosterPitch
+			first = max(0, min(first, len(hub.Items)-Visible))
+			first = min(first, h.col[i])
+			first = max(first, h.col[i]-Visible+1)
+			h.colX[i].Set(float64(first * PosterPitch))
+			break
+		}
+	}
 	h.setHubs(kept)
+	h.pageKey = ""
 }
 
 func (h *Home) setHubs(hubs []*plex.Hub) {
@@ -196,6 +299,7 @@ func (h *Home) Key(ev input.Event, now time.Time) {
 		h.colX[h.row].Settle(now)
 		return
 	}
+	oldRow := h.row
 	hub := h.hubs[h.row]
 	pitch, vis := PosterPitch, Visible
 	switch ev.Key {
@@ -243,6 +347,14 @@ func (h *Home) Key(ev input.Event, now time.Time) {
 			h.app.Open(it, false)
 		}
 	}
+	if h.row != oldRow {
+		direction := 1
+		if h.row < oldRow {
+			direction = -1
+		}
+		h.rowY.Set(float64(direction * 48))
+		h.rowY.Go(0, now)
+	}
 	h.focusAt = now
 	// keep the focused tile inside the visible columns
 	c := h.col[h.row]
@@ -282,17 +394,21 @@ func (h *Home) Draw(c *gfx.Canvas, now time.Time) bool {
 	// written once (the frame is write-combined)
 	h.holes = h.holes[:0]
 	ox := round(h.colX[h.row].At(now))
+	ty := TilesY + round(h.rowY.At(now))
 	for j := range h.hubs[h.row].Items {
 		x := SafeX + j*PosterPitch - ox
 		if x+PosterW <= 0 || x >= c.W {
 			continue
 		}
-		h.holes = append(h.holes, gfx.Rect{X: max(x, 0), Y: TilesY, W: min(x+PosterW, c.W) - max(x, 0), H: PosterH})
+		h.holes = append(h.holes, gfx.Rect{X: max(x, 0), Y: max(ty, 0), W: min(x+PosterW, c.W) - max(x, 0), H: min(ty+PosterH, c.H) - max(ty, 0)})
 	}
 	t0 := time.Now()
 	anim := h.drawPage(c, now)
 	t1 := time.Now()
 	anim = h.drawStrip(c, now) || anim
+	h.prefetchPosters()
+	h.prefetchBackdrops(c.W, c.H)
+	h.warmHomeArtwork(c.W, c.H)
 	if h.fixed != nil {
 		if now.Sub(h.focusAt) < HeroRest {
 			anim = true // wake once the selection has settled
@@ -574,12 +690,79 @@ func dots(c *gfx.Canvas, x, y int, f *gfx.Font, col gfx.Color, tokens []string, 
 	}
 }
 
-// drawStrip paints the focused row's posters; after a row change they
-// fade in from the background.
+// prefetchPosters warms nearby rows and a screenful on either side of the
+// current viewport. The bounded neighborhood leaves cache room for hero art;
+// visible requests always take priority over this background work.
+func (h *Home) prefetchPosters() {
+	if h.app.Art == nil {
+		return
+	}
+	for distance := 2; distance >= 0; distance-- {
+		for row := max(0, h.row-distance); row <= min(len(h.hubs)-1, h.row+distance); row++ {
+			if abs(row-h.row) != distance {
+				continue
+			}
+			first := round(h.colX[row].Target()) / PosterPitch
+			start, end := first, first+Visible
+			if row == h.row {
+				start, end = first-Visible, first+2*Visible
+			}
+			for j := max(0, start); j < min(len(h.hubs[row].Items), end); j++ {
+				it := h.hubs[row].Items[j]
+				if it.Type != "more" {
+					h.app.Art.Prefetch(it.Thumb, PosterW, PosterH)
+				}
+			}
+		}
+	}
+}
+
+// Keep just the nearest hero candidates warm: full-screen decoded art is
+// much larger than a poster. Art reuses both its bounded memory cache and
+// the Plex client's disk cache when these become visible.
+func (h *Home) prefetchBackdrops(w, height int) {
+	if h.app.Art == nil || !h.home {
+		return
+	}
+	for row := max(0, h.row-1); row <= min(len(h.hubs)-1, h.row+1); row++ {
+		first, last := h.col[row], h.col[row]
+		if row == h.row {
+			first, last = first-1, last+1
+		}
+		for j := max(0, first); j <= min(len(h.hubs[row].Items)-1, last); j++ {
+			it := h.hubs[row].Items[j]
+			if it.Type != "more" {
+				h.app.Art.get(artReq{thumb: heroArt(it), w: w, h: height,
+					bright: HeroBright, fade: HeroFade, prefetch: true})
+			}
+		}
+	}
+}
+
+// Queue every home item, including distant rows and offscreen columns.
+// The loader deduplicates this persistent backlog and services it last.
+func (h *Home) warmHomeArtwork(w, height int) {
+	if !h.home || h.app.Art == nil {
+		return
+	}
+	for _, hub := range h.hubs {
+		for _, it := range hub.Items {
+			if it.Type == "more" {
+				continue
+			}
+			h.app.Art.Warm(artReq{thumb: it.Thumb, w: PosterW, h: PosterH})
+			h.app.Art.Warm(artReq{thumb: heroArt(it), w: w, h: height, bright: HeroBright, fade: HeroFade})
+		}
+	}
+}
+
+// drawStrip paints the focused row's posters, sliding and fading them in
+// from the direction of vertical travel after a row change.
 func (h *Home) drawStrip(c *gfx.Canvas, now time.Time) bool {
 	hub := h.hubs[h.row]
 	ox := round(h.colX[h.row].At(now))
-	anim := h.colX[h.row].Running(now)
+	anim := h.colX[h.row].Running(now) || h.rowY.Running(now)
+	y := TilesY + round(h.rowY.At(now))
 	rowT := 0 // of 256 still hidden
 	if since := now.Sub(h.rowAt); since < animDur {
 		rowT = 256 - int(since*256/animDur)
@@ -590,7 +773,7 @@ func (h *Home) drawStrip(c *gfx.Canvas, now time.Time) bool {
 		if x+PosterW <= 0 || x >= c.W {
 			continue
 		}
-		anim = h.drawTile(c, it, x, TilesY, j == h.col[h.row], rowT) || anim
+		anim = h.drawTile(c, it, x, y, j == h.col[h.row], rowT) || anim
 	}
 	return anim
 }

@@ -12,6 +12,7 @@ import (
 // selected season survive a layout change; only leaving the show pops a screen.
 // Home and Season supply the existing picker and episode layout drawing.
 type Show struct {
+	periodic    viewRefresh
 	app         *App
 	item        *plex.Item
 	picker      *Home

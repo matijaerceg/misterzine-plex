@@ -14,12 +14,13 @@ import (
 // title, facts, poster, a short synopsis (which opens in full) and a
 // short stack of actions.
 type Preplay struct {
-	app     *App
-	item    *plex.Item
-	actions []string
-	cur     int         // -1: the synopsis
-	more    bool        // the synopsis was cut: it can be opened
-	page    *gfx.Canvas // the page is composed here (blending reads pixels,
+	periodic viewRefresh
+	app      *App
+	item     *plex.Item
+	actions  []string
+	cur      int         // -1: the synopsis
+	more     bool        // the synopsis was cut: it can be opened
+	page     *gfx.Canvas // the page is composed here (blending reads pixels,
 	// which must not happen on the write-combined frame), then copied
 }
 
@@ -94,8 +95,10 @@ func (p *Preplay) Key(ev input.Event, now time.Time) {
 		a := p.actions[p.cur]
 		switch {
 		case strings.HasPrefix(a, "Audio"):
+			p.periodic.reset()
 			p.app.chooseStream(p.item, "Audio", p.rebuild)
 		case strings.HasPrefix(a, "Subtitles"):
+			p.periodic.reset()
 			p.app.chooseStream(p.item, "Subtitles", p.rebuild)
 		case strings.HasPrefix(a, "Resume"):
 			p.play(p.item.ViewOffset)
@@ -119,6 +122,7 @@ func (p *Preplay) play(offset int) {
 }
 
 func (p *Preplay) refresh() {
+	p.periodic.reset()
 	if fresh, err := p.app.Plex.Item(p.item.RatingKey); err == nil {
 		*p.item = *fresh
 	}

@@ -24,6 +24,8 @@ type Art struct {
 	cond   *sync.Cond
 	have   map[string]*artEntry
 	order  []string // LRU, oldest first
+	warm   []artReq // persistent, low-priority home-screen cache warming
+	warmed map[string]bool
 	wants  []artReq // pending, oldest first; workers take from the end
 	busy   map[string]bool
 	failed map[string]bool
@@ -84,6 +86,7 @@ func (a *Art) SetClient(c *plex.Client) {
 	a.have = map[string]*artEntry{}
 	a.order = nil
 	a.failed = map[string]bool{}
+	a.warm, a.warmed = nil, nil
 	a.mu.Unlock()
 }
 
@@ -157,11 +160,41 @@ func (a *Art) nextWant() (artReq, bool) {
 		}
 	}
 	if i < 0 {
+		for len(a.warm) > 0 {
+			r := a.warm[0]
+			a.warm = a.warm[1:]
+			k := r.key()
+			if a.have[k] == nil && !a.busy[k] && !a.failed[k] {
+				return r, true
+			}
+		}
 		return artReq{}, false
 	}
 	r := keep[i]
 	a.wants = append(keep[:i], keep[i+1:]...)
 	return r, true
+}
+
+// Warm schedules an image once for this server, behind visible and nearby
+// work. Unlike viewport requests it survives frame expiry, so every home row
+// eventually reaches the disk cache without pinning all decoded art in RAM.
+func (a *Art) Warm(r artReq) {
+	if r.thumb == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.warmed == nil {
+		a.warmed = make(map[string]bool)
+	}
+	k := r.key()
+	if a.warmed[k] {
+		return
+	}
+	a.warmed[k] = true
+	r.prefetch = true
+	a.warm = append(a.warm, r)
+	a.cond.Signal()
 }
 
 // Prefetch warms a nearby poster without competing with queued visible art.
@@ -176,6 +209,7 @@ func (a *Art) wallBand(thumb string) *gfx.Image {
 
 // evict drops the least recently used pictures beyond the cap.
 func (a *Art) evict() {
+	remaining := len(a.order)
 	for len(a.have) > ArtCap && len(a.order) > 0 {
 		// the order list is only approximately LRU: promote entries used
 		// this frame instead of dropping them
@@ -185,7 +219,8 @@ func (a *Art) evict() {
 		if e == nil {
 			continue
 		}
-		if e.used+1 >= a.frame {
+		if e.used+1 >= a.frame && remaining > 0 {
+			remaining--
 			a.order = append(a.order, k)
 			continue
 		}
@@ -327,5 +362,5 @@ func (a *Art) getImage(r artReq, band bool) (*gfx.Image, time.Duration, bool) {
 func (a *Art) Pending() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return len(a.busy) > 0 || len(a.wants) > 0
+	return len(a.busy) > 0 || len(a.wants) > 0 || len(a.warm) > 0
 }

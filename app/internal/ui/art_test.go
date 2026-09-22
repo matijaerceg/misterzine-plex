@@ -37,3 +37,16 @@ func TestArtPromoteAndExpirePrefetch(t *testing.T) {
 		t.Fatal("stale neighborhood survived jump")
 	}
 }
+
+func TestArtEvictionWhenAllEntriesAreRecent(t *testing.T) {
+	a := NewArt(nil, 0, nil)
+	for i := 0; i <= ArtCap; i++ {
+		key := string(rune(i + 1))
+		a.have[key] = &artEntry{used: a.frame}
+		a.order = append(a.order, key)
+	}
+	a.evict()
+	if len(a.have) != ArtCap {
+		t.Fatal("cache exceeded its memory bound")
+	}
+}

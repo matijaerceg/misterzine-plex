@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+from xml.sax.saxutils import escape
 
 FF_URL = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-armhf-static.tar.xz'
 FF_SHA = '7d41f558cb1f3395b313f8ceabed78b3731c79a0962abf405ebb5cd393e93991'
@@ -246,6 +247,19 @@ def cleanup_player(folder):
             pass
 
 
+def core_launch_entry(root, folder):
+    # MiSTer anchors its core browser to the MGL's directory, even when the
+    # bitstream lives elsewhere. Keep this internal entry at the card root.
+    core = folder / 'MisterZine Plex Core.rbf'
+    if not core.exists():
+        core = folder / 'MisterZine Plex.rbf'
+    entry = root.parent / '.misterzine-plex-core.mgl'
+    relative = core.relative_to(root.parent).with_suffix('').as_posix()
+    body = '<mistergamedescription>\n  <rbf>' + escape(relative) + '</rbf>\n</mistergamedescription>\n'
+    atomic(entry, body.encode())
+    return entry
+
+
 def prepare_framebuffer(parameters=Path('/sys/module/MiSTer_fb/parameters')):
     # MiSTer sizes fbdev for the selected HDMI/menu profile. The Plex core
     # instead uses a fixed frame ring in this reserved memory. Enlarge only
@@ -266,11 +280,9 @@ def run(root):
     args = [str(folder / 'plexcrt'), '-config', str(root / 'plexcrt.json'),
             '-cache', str(root / 'cache'), '-ffmpeg', str(root / 'ffmpeg')]
     subprocess.run(args + ['-check'], check=True)
+    entry = core_launch_entry(root, folder)
     with open('/dev/MiSTer_cmd', 'w') as cmd:
-        core = folder / 'MisterZine Plex Core.rbf'
-        if not core.exists():
-            core = folder / 'MisterZine Plex.rbf'
-        cmd.write('load_core ' + str(core) + '\n')
+        cmd.write('load_core ' + str(entry) + '\n')
     time.sleep(2)
     # Keep a read-only watch on the core. Returning to Menu stops this app too.
     with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 4096, access=mmap.ACCESS_READ) as mem:

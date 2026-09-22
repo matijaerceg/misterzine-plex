@@ -134,8 +134,8 @@ func abs(v int) int {
 }
 
 const (
-	OsdY      = 296 // the panel: from here to the safe bottom
-	OsdH      = 144
+	OsdY      = 296 // controls stay in the safe area; background reaches the raster edge
+	OsdH      = 480 - OsdY
 	OsdAlpha  = 200
 	OsdHide   = 4 * time.Second
 	OsdFlash  = 2 * time.Second

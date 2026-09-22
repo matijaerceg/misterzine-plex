@@ -288,6 +288,14 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 		return
 	}
 	a.seasonData = nil
+	defer func() {
+		for _, screen := range a.stack {
+			if h, ok := screen.(*Home); ok && h.home {
+				h.refreshResult = nil
+				h.refreshAt = time.Time{}
+			}
+		}
+	}()
 	if a.osd == nil {
 		if r, ok := a.Out.(*ring.Ring); ok {
 			a.osd = r.Overlay()
@@ -789,6 +797,12 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 			}
 		}
 		a.runLater()
+		if h, ok := a.top().(*Home); ok {
+			h.pollHome(time.Now())
+		}
+		if screen, ok := a.top().(interface{ pollRefresh(time.Time) }); ok {
+			screen.pollRefresh(time.Now())
+		}
 		if a.dirty {
 			waited := animating // this frame was started by WaitField
 			t0 := time.Now()

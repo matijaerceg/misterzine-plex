@@ -82,7 +82,7 @@ func NewWordmark() *Wordmark {
 	}
 	over := &gfx.Image{W: w, H: h, Pix: make([]byte, w*h*4), Alpha: true}
 	for i := 0; i < w*h; i++ {
-		s := sh[i] * 0.85 // shadow strength
+		s := sh[i] * 0.40 // shadow strength
 		if s > 1 {
 			s = 1
 		}

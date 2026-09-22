@@ -14,25 +14,26 @@ import (
 // highlighted episode's title, facts, synopsis and actions. Every episode
 // is played and marked from here; the shoulder buttons step seasons.
 type Season struct {
-	app     *App
-	view    *Show
-	show    *plex.Item
-	seasons []*plex.Item // the show's seasons, for stepping
-	si      int          // which one this is
-	eps     []*plex.Item
-	thumbs  map[string]*artEntry // retained for this season, independent of the shared LRU
-	cur     int
-	colX    Anim
-	acts    bool // the cursor is on the actions, not the filmstrip
-	pick    bool // the cursor is on the season picker in the header
-	act     int
-	actions []string
-	err     error
-	holes   []gfx.Rect
-	fetched map[string]bool // episodes whose streams have been asked for
-	loading bool            // the episode list is on its way
-	loadID  uint64          // rejects a stale result even after A -> B -> A
-	shown   *gfx.Canvas     // the page as drawn this frame (mid-fade: a step)
+	periodic viewRefresh
+	app      *App
+	view     *Show
+	show     *plex.Item
+	seasons  []*plex.Item // the show's seasons, for stepping
+	si       int          // which one this is
+	eps      []*plex.Item
+	thumbs   map[string]*artEntry // retained for this season, independent of the shared LRU
+	cur      int
+	colX     Anim
+	acts     bool // the cursor is on the actions, not the filmstrip
+	pick     bool // the cursor is on the season picker in the header
+	act      int
+	actions  []string
+	err      error
+	holes    []gfx.Rect
+	fetched  map[string]bool // episodes whose streams have been asked for
+	loading  bool            // the episode list is on its way
+	loadID   uint64          // rejects a stale result even after A -> B -> A
+	shown    *gfx.Canvas     // the page as drawn this frame (mid-fade: a step)
 
 	page, pagePrev *gfx.Canvas // header composed once per season and picture state
 	pageKey        string
@@ -75,6 +76,7 @@ func (s *Season) season() *plex.Item { return s.seasons[s.si] }
 // at once and fills in when they land. Opened at a given episode (from
 // Continue Watching) the cursor starts on its Resume button.
 func (s *Season) load(at string) {
+	s.periodic.reset()
 	sea := s.season()
 	s.eps = nil
 	s.thumbs = nil
@@ -355,6 +357,10 @@ func (s *Season) toShow() {
 }
 
 func (s *Season) do(a string) {
+	s.periodic.reset()
+	if s.view != nil {
+		s.view.periodic.reset()
+	}
 	s.app.seasonData = nil // playback or marking can change watched state
 	it := s.focused()
 	switch {
