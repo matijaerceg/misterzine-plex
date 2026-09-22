@@ -455,7 +455,7 @@ func (h *Home) compose(c *gfx.Canvas, it *plex.Item, img, logo *gfx.Image, logoP
 	if h.fixed != nil {
 		return
 	}
-	label := h.hubs[h.row].Title
+	label := h.app.hubLabel(h.hubs[h.row])
 	ly := StripY
 	x := SafeX
 	if len(h.hubs) > 1 {

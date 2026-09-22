@@ -136,7 +136,15 @@ func (d *Drawer) compose(off int) {
 			col = gfx.White
 			menuFocusBar(c, off+MenuX, y, f.Height())
 		}
-		c.Text(off+MenuX, y, f, col, f.Fit(it.Title, DrawerW-MenuX-24))
+		title := it.Title
+		if it.Type == "section" && d.app.Showcase {
+			if section, ok := d.app.section(it.Key); ok {
+				title = d.app.libraryLabel(section)
+			} else {
+				title = "Library"
+			}
+		}
+		c.Text(off+MenuX, y, f, col, f.Fit(title, DrawerW-MenuX-24))
 		y += DrawerRowH
 	}
 }

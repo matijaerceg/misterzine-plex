@@ -46,6 +46,13 @@ The core OSD has **Video output: App settings / Safe 480i**. Normally leave it
 on App settings. HDMI 480p is selected in the app's Options and requires a fresh
 two-second OK hold to keep the change. It reverts if you do not confirm.
 
+For pixel inspection, set the core OSD **HDMI aspect** to **Square pixels**.
+With 1080p HDMI output and integer vertical scaling (`vscale_mode=1`), the
+720x480 app raster occupies a centered 1440x960 area. This preserves square
+2x2 pixel blocks and appears wider than the intended CRT proportions. Select
+**Original 4:3** to restore the normal shape. The aspect option does not change
+analog scan timing.
+
 Theme music plays at half gain. Soft navigation taps follow selection changes;
 both can be disabled in Options. Assess their timing on your actual display.
 
@@ -99,3 +106,16 @@ hold-to-confirm and timeout-to-revert once. Check normal startup has no test car
 
 See `THIRD_PARTY_NOTICES.md` and the `licenses` folder for retained licenses.
 Matching core and presenter sources are supplied in `corresponding-source.zip`.
+
+### Showcase captures
+
+Options ends with the app version and build information. Select Version and
+press OK three times in quick succession (less than two seconds between presses)
+to toggle Showcase Mode. A brief message confirms whether it is on or off.
+Showcase Mode uses generic library names and hides library totals and numeric
+library position counts. Titles, artwork, episode details and watched/progress
+indicators remain visible. The account name is also omitted from Sign out.
+The mode lasts until the app exits; repeat the shortcut to turn it off sooner.
+After switching, Back returns to Home so cached menu images cannot expose old
+labels. This is capture styling, not full account anonymization; server selection
+and sign-in screens can still contain identifying information.

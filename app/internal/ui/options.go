@@ -10,8 +10,10 @@ import (
 
 // Options is the settings screen: a short list of toggles.
 type Options struct {
-	app *App
-	cur int
+	app            *App
+	cur            int
+	versionPresses int
+	versionAt      time.Time
 }
 
 type option struct {
@@ -60,10 +62,16 @@ func (o *Options) items() []option {
 		items = append(items, option{label: "Choose server again", do: func() { o.app.Push(NewServerPicker(o.app)) }})
 	}
 	label := "Sign out"
-	if cfg.Token != "" && cfg.AccountName != "" {
+	if cfg.Token != "" && cfg.AccountName != "" && !o.app.Showcase {
 		label = "Sign out (" + cfg.AccountName + ")"
 	}
 	items = append(items, option{label: label, do: o.app.SignOut})
+	items = append(items, option{label: "Version", val: func() string {
+		if o.app.Version == "" {
+			return "development"
+		}
+		return o.app.Version
+	}, do: func() {}})
 	return items
 }
 
@@ -118,6 +126,22 @@ func (o *Options) Key(ev input.Event, now time.Time) {
 		return
 	}
 	items := o.items()
+	if o.cur == len(items)-1 && ev.Key == input.Enter {
+		if ev.Repeat {
+			return
+		}
+		if now.Sub(o.versionAt) > 2*time.Second {
+			o.versionPresses = 0
+		}
+		o.versionAt = now
+		o.versionPresses++
+		if o.versionPresses == 3 {
+			o.versionPresses = 0
+			o.app.toggleShowcase(o, now)
+		}
+		return
+	}
+	o.versionPresses = 0
 	switch ev.Key {
 	case input.Up:
 		if o.cur > 0 {
@@ -186,6 +210,9 @@ func (o *Options) Draw(c *gfx.Canvas, now time.Time) bool {
 			o.app.textRight(c, MenuRight, y+9, f.Body, gfx.Amber, it.val())
 		}
 		y += MenuRowH
+	}
+	if o.app.Build != "" {
+		o.app.text(c, MenuX, y+9, f.Small, gfx.GreyLo, f.Small.Fit("Build: "+o.app.Build, MenuWidth))
 	}
 	return false
 }

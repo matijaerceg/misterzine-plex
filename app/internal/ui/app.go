@@ -77,7 +77,9 @@ type App struct {
 	// Mark is the app's wordmark, rendered once.
 	Mark *Wordmark
 	// Cfg is the user's settings (Options screen) and sign-in.
-	Cfg *Config
+	Cfg            *Config
+	Showcase       bool // session-only capture privacy
+	Version, Build string
 	// Connected is signalled by the sign-in screen once a server is saved.
 	Connected chan struct{}
 	// Notice is a line shown along the bottom for a few seconds (a file

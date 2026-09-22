@@ -246,6 +246,20 @@ def cleanup_player(folder):
             pass
 
 
+def prepare_framebuffer(parameters=Path('/sys/module/MiSTer_fb/parameters')):
+    # MiSTer sizes fbdev for the selected HDMI/menu profile. The Plex core
+    # instead uses a fixed frame ring in this reserved memory. Enlarge only
+    # the Linux mapping; this does not change the core or HDMI scan timing.
+    # MiSTer reapplies its own framebuffer mode when another core is loaded.
+    mode = parameters / 'mode'
+    values = [int(value) for value in mode.read_text().split()]
+    if len(values) != 5:
+        raise RuntimeError('Cannot read MiSTer framebuffer geometry')
+    fmt, rb, width, height, stride = values
+    if fmt != 8888 or stride * height < 0x7e0000:
+        mode.write_text('8888 1 1920 1080 7680\n')
+
+
 def run(root):
     state = read_state(root)
     folder = root / 'releases' / state['current']
@@ -259,7 +273,7 @@ def run(root):
         cmd.write('load_core ' + str(core) + '\n')
     time.sleep(2)
     # Keep a read-only watch on the core. Returning to Menu stops this app too.
-    with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 0x7e0000, access=mmap.ACCESS_READ) as mem:
+    with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 4096, access=mmap.ACCESS_READ) as mem:
         last = struct.unpack_from('<I', mem, 0x40)[0]
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
@@ -271,6 +285,7 @@ def run(root):
             last = field
         else:
             raise RuntimeError('Plex core did not start. Reinstall the matching package and try again.')
+        prepare_framebuffer()
         changed = time.monotonic()
         with open('/tmp/misterzine-plex.log', 'wb') as log:
             child = subprocess.Popen(args, stdout=log, stderr=log)

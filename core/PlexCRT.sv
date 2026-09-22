@@ -48,14 +48,17 @@ assign BUTTONS   = 0;
 
 //////////////////////////////////////////////////////////////////
 
-assign VIDEO_ARX = 12'd4;
-assign VIDEO_ARY = 12'd3;
+// Square-pixel HDMI inspection preserves the 720x480 raster at 3:2.
+// This only changes scaler aspect; analog scan timing is unchanged.
+assign VIDEO_ARX = status[7] ? 12'd3 : 12'd4;
+assign VIDEO_ARY = status[7] ? 12'd2 : 12'd3;
 
 `include "build_id.v"
 localparam CONF_STR = {
 	"MisterZine Plex Core;;",
 	"-;",
 	"O[6],Video output,App settings,Safe 480i;",
+	"O[7],HDMI aspect,Original 4:3,Square pixels;",
 	"-;",
 	// button order fixes joystick_0 bits 4..11 for the ARM menu (plexmenu.py)
 	"J1,OK,Back,L,R;",

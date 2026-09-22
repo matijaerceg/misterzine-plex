@@ -404,9 +404,10 @@ func (w *Wall) compose(c *gfx.Canvas, img *gfx.Image, total int) {
 		c.Fill(0, 0, c.W, c.H, gfx.Bg)
 	}
 	f := w.app.F
-	tx := f.Body.Width(w.section.Title)
-	c.Text(SafeX, SafeY-2, f.Body, gfx.GreyHi, f.Body.Fit(w.section.Title, SafeW-80))
-	if total > 0 {
+	title := w.app.libraryLabel(w.section)
+	tx := f.Body.Width(title)
+	c.Text(SafeX, SafeY-2, f.Body, gfx.GreyHi, f.Body.Fit(title, SafeW-80))
+	if total > 0 && !w.app.Showcase {
 		c.Text(SafeX+min(tx, SafeW-80)+14, SafeY+2, f.SmallBold, gfx.GreyLo, itoa(total))
 	}
 	// view tabs under the title; the current one underlined in amber and
@@ -443,6 +444,9 @@ func (w *Wall) marker(n int) string {
 		if it := w.pager.Get(w.cur); it != nil && it.SortLabel() != "" {
 			return strings.ToUpper(it.SortLabel()[:1])
 		}
+		return ""
+	}
+	if w.app.Showcase {
 		return ""
 	}
 	s := itoa(w.cur+1) + " / " + itoa(n)

@@ -84,6 +84,23 @@ class InstallerTests(unittest.TestCase):
                 manager.install(self.card, self.package)
         self.assertEqual(manager.read_state(self.root)['current'], 'alpha-1')
 
+    def test_small_hdmi_framebuffer_is_enlarged_for_ring(self):
+        params = self.base / 'framebuffer'
+        params.mkdir()
+        mode = params / 'mode'
+        mode.write_text('8888 1 640 480 2560')
+        manager.prepare_framebuffer(params)
+        self.assertEqual(mode.read_text(), '8888 1 1920 1080 7680\n')
+
+    def test_large_framebuffer_is_left_alone(self):
+        params = self.base / 'framebuffer'
+        params.mkdir()
+        mode = params / 'mode'
+        original = '8888 1 1920 1080 7680'
+        mode.write_text(original)
+        manager.prepare_framebuffer(params)
+        self.assertEqual(mode.read_text(), original)
+
     def test_reject_path_escape(self):
         self.root.mkdir(parents=True)
         manager.write_json(self.root / 'active.json', {'current': '../elsewhere'})

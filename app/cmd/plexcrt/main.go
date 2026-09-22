@@ -115,6 +115,7 @@ func main() {
 	if *dump != "" {
 		app := ui.New(client, &fileOut{gfx.NewCanvas(720, 480)}, nil, lg)
 		app.Cfg = cfg
+		app.Version, app.Build = version, build
 		app.SetCacheDir(*cache)
 		app.Start()
 		app.DrawOnce()
@@ -142,6 +143,7 @@ func main() {
 	player.Access = func() error { return beta.Check(filepath.Dir(*cfgPath)) }
 	app := ui.New(client, r, player, lg)
 	app.Cfg = cfg
+	app.Version, app.Build = version, build
 	app.SetCacheDir(*cache)
 	player.Reap()
 	defer player.Reap()
