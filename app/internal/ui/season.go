@@ -461,7 +461,6 @@ func (s *Season) drawDetails(c, page *gfx.Canvas, now time.Time) bool {
 		x += f.SmallBold.Width(t)
 	}
 	y += f.SmallBold.Height() + 2
-	titleY := y
 	s.app.textOver(c, page, SafeX, y, f.Body, gfx.White, f.Body.Fit(it.Title, SafeW))
 	y += f.Body.Height() + 4
 	for _, line := range wrap(f.SmallBold, it.Summary, SafeW, 2) {
@@ -473,6 +472,10 @@ func (s *Season) drawDetails(c, page *gfx.Canvas, now time.Time) bool {
 	// edge fade out, and chevrons mark what lies beyond
 	starting := !s.app.Starting.IsZero()
 	off := round(s.actX.At(now))
+	startingAct := s.act
+	if starting && !s.acts {
+		startingAct, off = 0, 0 // filmstrip playback uses the first Play/Resume action
+	}
 	anim = anim || s.actX.Running(now)
 	rowW := s.actLeft(len(s.actions))
 	sy, sh := ActY-6, f.Body.Height()+16
@@ -492,12 +495,12 @@ func (s *Season) drawDetails(c, page *gfx.Canvas, now time.Time) bool {
 		if strings.HasPrefix(a, "Play") || strings.HasPrefix(a, "Resume") {
 			col = gfx.Amber
 		}
-		if s.acts && i == s.act {
+		if (s.acts && i == s.act) || (starting && i == startingAct) {
 			if col != gfx.Amber {
 				col = gfx.White
 			}
-			if starting {
-				sweep(st, x, 6+f.Body.Height()+4, w, BarW, time.Since(s.app.Starting))
+			if starting && i == startingAct {
+				sweep(st, x, 6+f.Body.Height()+4, w, BarW, now.Sub(s.app.Starting))
 				anim = true
 			} else {
 				st.Fill(x, 6+f.Body.Height()+4, w, BarW, gfx.GreyHi)
@@ -536,11 +539,7 @@ func (s *Season) drawDetails(c, page *gfx.Canvas, now time.Time) bool {
 	if rowW-off > SafeW {
 		chevronRight(c, SafeX+SafeW+16, ActY+f.Body.Height()/2-6, gfx.GreyLo)
 	}
-	if starting && !s.acts {
-		// started from the filmstrip: the run goes under the episode title
-		sweep(c, SafeX, titleY+f.Body.Height()+3, f.Body.Width(f.Body.Fit(it.Title, SafeW)), BarW, time.Since(s.app.Starting))
-		anim = true
-	}
+
 	return anim
 }
 

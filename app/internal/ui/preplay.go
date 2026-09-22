@@ -25,13 +25,14 @@ type Preplay struct {
 }
 
 const (
-	PreX     = SafeX
-	PreTextX = SafeX + PosterW + 24
-	BgBright = 90  // of 255: the backdrop is a mood, text must win
-	BgFade   = 260 // px at the bottom fading to the background colour
-	PreLogoW = 360
-	PreLogoH = 90
-	PreLines = 2 // synopsis lines: short, so it never has to be read at length
+	PreX        = SafeX
+	PreTextX    = SafeX + PosterW + 24
+	BgBright    = 90  // of 255: the backdrop is a mood, text must win
+	BgFade      = 260 // px at the bottom fading to the background colour
+	PreLogoW    = 360
+	PreLogoH    = 90
+	PreFocusGap = 6 // space between the movie-page selection bar and text
+	PreLines    = 2 // synopsis lines: short, so it never has to be read at length
 )
 
 // NewPreplay makes the page for a playable item. Hub listings omit the
@@ -264,14 +265,14 @@ func (p *Preplay) compose(c *gfx.Canvas, now time.Time) bool {
 	col := gfx.GreyLo
 	if p.cur < 0 {
 		col = gfx.GreyHi
-		focusBar(c, PreTextX, sy, len(lines)*(f.SmallBold.Height()+2)-2)
+		c.Fill(PreTextX-PreFocusGap-BarW, sy+2, BarW, len(lines)*(f.SmallBold.Height()+2)-6, gfx.GreyHi)
 	}
 	for _, line := range lines {
 		c.Text(PreTextX, y, f.SmallBold, col, line)
 		y += f.SmallBold.Height() + 2
 	}
-	// actions: plain text, the chosen one white with the bar (amber while
-	// playback is starting, with the dots beside it)
+	// Actions keep a close left focus bar; playback progress runs below
+	// the selected Play/Resume label.
 	starting := !p.app.Starting.IsZero()
 	ay := y + 14
 	ah := f.Body.Height() + 10
@@ -284,11 +285,10 @@ func (p *Preplay) compose(c *gfx.Canvas, now time.Time) bool {
 			if col != gfx.Amber {
 				col = gfx.White
 			}
-			if starting {
-				sweep(c, PreTextX-BarGap-BarW, ay+2, BarW, f.Body.Height()-4, time.Since(p.app.Starting))
+			c.Fill(PreTextX-PreFocusGap-BarW, ay+2, BarW, f.Body.Height()-4, gfx.GreyHi)
+			if starting && (strings.HasPrefix(a, "Play") || strings.HasPrefix(a, "Resume")) {
+				sweep(c, PreTextX, ay+f.Body.Height()+3, f.Body.Width(a), BarW, now.Sub(p.app.Starting))
 				anim = true
-			} else {
-				c.Fill(PreTextX-BarGap-BarW, ay+2, BarW, f.Body.Height()-4, gfx.GreyHi)
 			}
 		}
 		c.Text(PreTextX, ay, f.Body, col, a)
