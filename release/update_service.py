@@ -126,6 +126,25 @@ def register(card, release):
     manager.atomic(card / 'downloader_misterzine_plex.ini', database_text(release).encode())
 
 
+# Downloader rejects a CURL_SSL value longer than this with a configuration
+# error, so a long certificate path must not be passed through it.
+CURL_SSL_MAX = 50
+
+
+def certificate_env(card, system=Path('/etc/ssl/certs/cacert.pem')):
+    """Certificate settings for Downloader: the system bundle first, since its
+    short path fits Downloader's CURL_SSL limit; the bundle Downloader keeps
+    for itself only as a fallback, and then only through SSL_CERT_FILE."""
+    for cert in (system, card / 'Scripts/.config/downloader/cacert.pem'):
+        if cert.is_file():
+            env = {'SSL_CERT_FILE': str(cert)}
+            option = '--cacert ' + str(cert)
+            if len(option) <= CURL_SSL_MAX:
+                env['CURL_SSL'] = option
+            return env
+    return {}
+
+
 def download(card, root, release, runner=subprocess.run):
     if other_downloader():
         raise RuntimeError('Another Downloader or Update All run is active. Try again when it finishes.')
@@ -136,11 +155,7 @@ def download(card, root, release, runner=subprocess.run):
                FORCED_BASE_PATH=str(card), DEFAULT_BASE_PATH=str(card), UPDATE_LINUX='false', ALLOW_REBOOT='0',
                EXTRA_DROP_IN_DATABASE_FILES='', FAIL_ON_FILE_ERROR='true', PYTHONUTF8='1',
                LOGFILE=str(root / 'updates/downloader.log'))
-    for cert in (card / 'Scripts/.config/downloader/cacert.pem', Path('/etc/ssl/certs/cacert.pem')):
-        if cert.is_file():
-            env['SSL_CERT_FILE'] = str(cert)
-            env['CURL_SSL'] = '--cacert ' + str(cert)
-            break
+    env.update(certificate_env(card))
     # Output belongs in an explicit device diagnostic log, never in the UI or request file.
     with (root / 'updates/download-output.log').open('wb') as log:
         result = runner(command + ['--run-only', releases.DB_ID], env=env, stdout=log, stderr=log, timeout=1800)

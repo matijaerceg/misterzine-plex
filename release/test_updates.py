@@ -205,6 +205,23 @@ class UpdateTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0)
         service.download(self.card, self.root, r, run)
 
+    def test_certificate_option_fits_downloader_limit(self):
+        # Downloader refuses CURL_SSL over 50 characters, so the long bundle path
+        # under Scripts must never be passed as an option.
+        scripts = self.card / 'Scripts/.config/downloader'; scripts.mkdir(parents=True)
+        own = scripts / 'cacert.pem'; own.write_text('')
+        missing = self.card / 'no-system-bundle.pem'
+        env = service.certificate_env(self.card, system=missing)
+        self.assertEqual(env['SSL_CERT_FILE'], str(own))
+        self.assertNotIn('CURL_SSL', env)
+        system = self.card / 'cacert.pem'; system.write_text('')
+        env = service.certificate_env(self.card, system=system)
+        self.assertEqual(env['SSL_CERT_FILE'], str(system))
+        option = '--cacert ' + str(system)
+        self.assertEqual(env.get('CURL_SSL'), option if len(option) <= service.CURL_SSL_MAX else None)
+
+        self.assertLessEqual(len('--cacert /etc/ssl/certs/cacert.pem'), service.CURL_SSL_MAX)
+
     def test_publishing_database_owns_only_staging_and_installer_is_standalone(self):
         r, z, _ = self.release()
         out = self.fixture / 'dist'
