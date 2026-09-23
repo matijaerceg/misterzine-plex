@@ -590,10 +590,28 @@ func (a *App) Start() {
 		a.osd.Bar(0, 0, 0, 0, 0, false)
 	}
 	if a.Plex != nil {
-		a.Push(NewHome(a))
+		// the first home fetch takes seconds on a slow server: put the
+		// background and the mark on screen before asking for anything
+		a.Push(&starting{app: a})
+		a.redraw()
+		a.stack[len(a.stack)-1] = NewHome(a)
+		a.dirty = true
 		return
 	}
 	a.Push(NewLogin(a))
+}
+
+// starting is the frame shown while home loads: the page background and
+// the mark where home will draw them, so home appears in place.
+type starting struct{ app *App }
+
+func (*starting) Key(input.Event, time.Time) {}
+func (s *starting) Draw(c *gfx.Canvas, _ time.Time) bool {
+	c.Fill(0, 0, c.W, c.H, gfx.Bg)
+	if s.app.Mark != nil {
+		s.app.Mark.PlaceFlat(c, SafeX+16, SafeY-8)
+	}
+	return false
 }
 
 // Connect switches to the server in the config (after sign-in) and

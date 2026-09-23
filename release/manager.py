@@ -369,7 +369,9 @@ def prepare_framebuffer(parameters=Path('/sys/module/MiSTer_fb/parameters')):
         mode.write_text('8888 1 1920 1080 7680\n')
 
 
-def selected_core(core, proc_root=Path('/proc')):
+def mister_processes(proc_root=Path('/proc')):
+    """PID and first argument (the loaded core) of each MiSTer main process."""
+    found = {}
     for proc in proc_root.iterdir():
         if not proc.name.isdigit():
             continue
@@ -377,11 +379,19 @@ def selected_core(core, proc_root=Path('/proc')):
             if (proc / 'comm').read_text().strip() != 'MiSTer':
                 continue
             args = (proc / 'cmdline').read_bytes().split(b'\0')
-            if len(args) > 1 and args[1] == str(core).encode():
-                return True
         except OSError:
             continue
-    return False
+        found[int(proc.name)] = args[1] if len(args) > 1 else b''
+    return found
+
+
+def selected_core(core, proc_root=Path('/proc'), before=()):
+    """True once a MiSTer process not listed in `before` runs the selected core.
+
+    Loading a core restarts MiSTer main, so a new PID proves the switch
+    happened even when the same core was already loaded."""
+    return any(pid not in before and arg == str(core).encode()
+               for pid, arg in mister_processes(proc_root).items())
 
 
 def recover_activation(root):
@@ -418,17 +428,19 @@ def run(root):
             '-cache', str(root / 'cache'), '-ffmpeg', str(root / 'ffmpeg')]
     subprocess.run(args + ['-check'], check=True)
     entry = core_launch_entry(root, folder)
+    before = mister_processes()
     with open('/dev/MiSTer_cmd', 'w') as cmd:
         cmd.write('load_core ' + str(entry) + '\n')
-    time.sleep(2)
     core = folder / 'MisterZine Plex Core.rbf'
     if not core.exists():
         core = folder / 'MisterZine Plex.rbf'
-    deadline = time.monotonic() + 8
-    while not selected_core(core):
+    # No fixed delay: MiSTer restarts its main process to load a core, so a
+    # fresh PID running this core is the signal, however quick or slow it is.
+    deadline = time.monotonic() + 10
+    while not selected_core(core, before=before):
         if time.monotonic() > deadline:
             raise RuntimeError('MiSTer did not load the selected RBF. Reinstall the matching package.')
-        time.sleep(.1)
+        time.sleep(.05)
     # Keep a read-only watch on the core. Returning to Menu stops this app too.
     with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 4096, access=mmap.ACCESS_READ) as mem:
         last = struct.unpack_from('<I', mem, 0x40)[0]

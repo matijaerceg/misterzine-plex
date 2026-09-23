@@ -12,7 +12,7 @@ func (a *App) drawBetaBrand(c *gfx.Canvas) {
 	}
 	x, y := SafeX+SafeW-2-betaBadgeW, SafeY
 	switch a.top().(type) {
-	case *Home, *Login:
+	case *Home, *Login, *starting:
 		x, y = SafeX+16+a.Mark.W+12, SafeY
 	case *Drawer:
 		return // drawn on the moving drawer panel

@@ -28,6 +28,9 @@ class ProcessTests(unittest.TestCase):
             (proc/'cmdline').write_bytes(b'MiSTer\0/media/fat/old.rbf\0')
             self.assertFalse(manager.selected_core(Path('/media/fat/new.rbf'),Path(tmp)))
             self.assertTrue(manager.selected_core(Path('/media/fat/old.rbf'),Path(tmp)))
+            # The same core in a MiSTer process that predates load_core is not a switch.
+            self.assertFalse(manager.selected_core(Path('/media/fat/old.rbf'),Path(tmp),before={12}))
+            self.assertEqual(manager.mister_processes(Path(tmp)),{12:b'/media/fat/old.rbf'})
 
     def test_exited_child_does_not_block_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
