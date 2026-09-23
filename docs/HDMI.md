@@ -10,8 +10,8 @@ uneven text strokes. Side bars are normal on a widescreen display.
    output > 480p (HDMI)** in Plex. This is the core's source signal; MiSTer's
    scaler produces the final HDMI resolution. Keep CRT safety restrictions in
    place if an analog CRT is also connected.
-2. In the MiSTer OSD, leave **Scale** on **Normal**. HDMI aspect is fixed at
-   **Original 4:3**. Leave **Video output** on **App settings** for this HDMI setup.
+2. In the MiSTer OSD, leave **HDMI scaling** on **Normal**. HDMI aspect is fixed at
+   **4:3**. Leave **Force 480i** **Off** for this HDMI setup.
    Older cores have an **HDMI aspect** choice instead; select **Original 4:3**.
 3. Add or update this section in the **active MiSTer INI**, preserving other
    settings. If you use an alternate configuration, edit that file rather than
@@ -62,12 +62,13 @@ flowchart TD
   preferred over the higher-resolution options. Filtering can trade sharpness
   for more even strokes; matching 720x480 alone does not guarantee one-to-one
   pixels after aspect correction.
-- **V-Integer** in the core OSD can make source rows more even,
+- **Integer height** in the core OSD can make source rows more even,
   but leaves top/bottom bars at 1080p and an especially small picture at 720p.
   It is an optional preference, not the full-height recommendation.
   **Normal** follows MiSTer's INI scaling settings: use `vscale_mode=0` and
   `vscale_border=0` for full height. A global `vscale_mode=1` can still add borders
-  when Normal is selected. The OSD's INI notes are guidance, not live INI values.
+  when Normal is selected. The **HDMI setup help** submenu explains these settings; its notes are guidance,
+  not live INI values. The dimmed **HDMI aspect: 4:3** row is fixed information.
 
 ## What has been checked
 
