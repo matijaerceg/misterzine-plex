@@ -14,8 +14,9 @@ import (
 
 // Playing drives the overlay while a video plays: OK opens it, Back
 // closes it (and stops when it is closed), left and right seek ten
-// seconds with it closed and move along its buttons with it open. It
-// hides itself after a few seconds unless paused. Audio and Subtitles
+// seconds with it closed (a slim peek of the bar and the times shows the
+// jump) and move along its buttons with it open. It hides itself after a
+// few seconds unless paused. Audio and Subtitles
 // open a list in the overlay; a skip button appears over an intro or
 // credits marker; at the end a countdown runs on to the next episode.
 type Playing struct {
@@ -26,6 +27,8 @@ type Playing struct {
 	send    func(string)
 	visible bool
 	shownAt time.Time
+	peekAt  time.Time // a closed-overlay seek: the bar and times peek until OsdFlash
+	peekH   int       // the peek's height, from the last compose
 	focus   int
 	paused  bool
 	pos     float64
@@ -138,7 +141,7 @@ const (
 	OsdH      = 480 - OsdY
 	OsdAlpha  = 200
 	OsdHide   = 4 * time.Second
-	OsdFlash  = 2 * time.Second
+	OsdFlash  = 2 * time.Second // how long a closed-overlay seek shows the bar
 	OsdBtnGap = 30
 	SkipHold  = 8 * time.Second // the skip button stays this long after the marker starts
 )
@@ -418,9 +421,16 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			p.dirty = true
 		} else {
 			p.seekBy(float64(10 * d))
+			p.peekAt = now
+			p.dirty = true
 		}
 	case input.Back:
 		if ev.Repeat {
+			return false
+		}
+		if p.peeking(now) {
+			p.peekAt = time.Time{}
+			p.dirty = true
 			return false
 		}
 		if m := p.marker(); m != nil && !p.skipOff && !p.visible {
@@ -475,8 +485,13 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 		p.scrub, p.held = false, 0
 		p.dirty = true
 	}
-	skipBtn := p.skip != nil && !p.skipOff && now.Sub(p.skipAt) < SkipHold && !p.visible
-	if !p.visible && !skipBtn {
+	if !p.peekAt.IsZero() && !p.peeking(now) {
+		p.peekAt = time.Time{}
+		p.dirty = true
+	}
+	peek := p.peeking(now)
+	skipBtn := p.skip != nil && !p.skipOff && now.Sub(p.skipAt) < SkipHold && !p.visible && !peek
+	if !p.visible && !skipBtn && !peek {
 		if p.dirty {
 			p.painter.hide(osd)
 			osd.Dot(0, 0, 0, false)
@@ -511,6 +526,20 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 			by >= SafeY && by+OsdListRowH <= SafeY+OsdListH)
 		return
 	}
+	if peek {
+		// the bar and the times only, along the bottom edge: no cursor
+		osd.Dot(0, 0, 0, false)
+		osd.Bar(0, 0, 0, 0, 0, false)
+		key = "peek|" + itoa(int(p.pos))
+		if key != p.last {
+			p.last = key
+			p.compose(true)
+			h := p.peekH
+			p.painter.show(osd, 0, 480-h, &gfx.Canvas{W: 720, H: h, Pix: p.canvas.Pix[:720*h*4]}, p.alpha[:720*h])
+		}
+		p.dirty = false
+		return
+	}
 	if skipBtn {
 		osd.Dot(0, 0, 0, false)
 		osd.Bar(0, 0, 0, 0, 0, false)
@@ -536,7 +565,7 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	if key == p.last && p.composed {
 		return // nothing to repaint: composing every field cost a third of a core
 	}
-	p.compose()
+	p.compose(false)
 	if !p.composed {
 		p.composed = true
 		p.sprites()
@@ -596,8 +625,14 @@ func (p *Playing) skipKey() string {
 	return "skip|Skip intro"
 }
 
-// compose paints the panel.
-func (p *Playing) compose() {
+// peeking reports whether a closed-overlay seek is still showing its bar.
+func (p *Playing) peeking(now time.Time) bool {
+	return !p.peekAt.IsZero() && now.Sub(p.peekAt) < OsdFlash && !p.visible && p.list == nil
+}
+
+// compose paints the panel; for a peek only the bar and the times, and
+// peekH is set to the rows they take.
+func (p *Playing) compose(peek bool) {
 	c := &gfx.Canvas{W: 720, H: OsdH, Pix: p.canvas.Pix[:720*OsdH*4]}
 	f := p.app.F
 	c.Fill(0, 0, c.W, c.H, gfx.Bg)
@@ -620,11 +655,13 @@ func (p *Playing) compose() {
 		sub = "S" + itoa(it.Parent) + " E" + itoa(it.Index) + "  " + it.Title
 	}
 	y := 14
-	p.app.text(c, SafeX, y, f.Body, gfx.GreyHi, f.Body.Fit(title, SafeW-320))
-	if sub != "" {
-		p.app.textRight(c, SafeX+SafeW, y+3, f.SmallBold, gfx.GreyLo, f.SmallBold.Fit(sub, 300))
+	if !peek {
+		p.app.text(c, SafeX, y, f.Body, gfx.GreyHi, f.Body.Fit(title, SafeW-320))
+		if sub != "" {
+			p.app.textRight(c, SafeX+SafeW, y+3, f.SmallBold, gfx.GreyLo, f.SmallBold.Fit(sub, 300))
+		}
+		y += f.Body.Height() + 14
 	}
-	y += f.Body.Height() + 14
 	// the pill, marker spans on it, a dot while scrubbing, and the times:
 	// elapsed of total on the left, remaining on the right
 	pw := SafeW
@@ -651,6 +688,10 @@ func (p *Playing) compose() {
 		}
 	}
 	y += f.SmallBold.Height() + 12
+	if peek {
+		p.peekH = y
+		return
+	}
 	// the buttons, centred, the focused one white with a bar under it
 	labels := make([]string, len(osdButtons))
 	total := 0

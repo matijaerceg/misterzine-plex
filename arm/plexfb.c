@@ -63,12 +63,15 @@ struct stat_w {
 /* runtime control (AVI / raw modes):
  *   SIGUSR1  toggle pause (picture holds, audio stops with it)
  *   SIGTERM  leave cleanly: blank the screen, exit 0
+ *   SIGUSR2  leave quietly: keep the last frame on screen (a seek: the next
+ *            presenter takes over from it and starts its ring past that slot)
  * Progress goes to PLEXFB_STATUS (default /tmp/plexfb.stat) twice a second:
  *   pos=<s> shown=<n> filled=<n> eof=<0|1> paused=<0|1> starved=<n>
  */
-static volatile sig_atomic_t g_pause = 0, g_quit = 0;
+static volatile sig_atomic_t g_pause = 0, g_quit = 0, g_hold = 0;
 static void on_usr1(int s) { (void)s; g_pause = !g_pause; }
 static void on_term(int s) { (void)s; g_quit = 1; }
+static void on_usr2(int s) { (void)s; g_hold = 1; g_quit = 1; }
 
 static uint8_t *map;
 static struct hdr *hdr;
@@ -215,6 +218,9 @@ static void copy_frame(int buf, const uint32_t *src)
  * one frame per `fields_per_frame` fields, never blocking on the decoder, so
  * decoder jitter is absorbed instead of turning into repeated frames. */
 static volatile unsigned ring_filled = 0, ring_shown = 0;   /* frame counters */
+/* the counters start at ring_base so the first slots written are not the
+   one a previous presenter left on screen (its frame holds until ours) */
+static unsigned ring_base = 0;
 static volatile int ring_eof = 0;
 static double stat_read_ms = 0;
 /* every decoded frame is kept in RAM too (the ring is write-combined and
@@ -259,7 +265,7 @@ static void write_status(double pos, int starved)
 	FILE *f = fopen(tmp, "w");
 	if (!f) return;
 	fprintf(f, "pos=%.2f shown=%u filled=%u eof=%d paused=%d starved=%d\n",
-	        pos, ring_shown, ring_filled, ring_eof, (int)g_pause, starved);
+	        pos, ring_shown - ring_base, ring_filled - ring_base, ring_eof, (int)g_pause, starved);
 	fclose(f);
 	rename(tmp, path);
 }
@@ -282,7 +288,7 @@ static void blank_screen(uint32_t seq)
 static void present_loop(double fps, uint32_t seq)
 {
 	/* let the reader get a head start so the first frames are not starved */
-	while (ring_filled < RING - 2 && !ring_eof && !g_quit) usleep(1000);
+	while (ring_filled - ring_base < RING - 2 && !ring_eof && !g_quit) usleep(1000);
 	if (g_avi_fps > 10 && g_avi_fps < 70 && fabs(g_avi_fps - fps) > 0.01) {
 		fprintf(stderr, "plexfb: stream says %.3f fps, launcher said %.3f: following the stream\n", g_avi_fps, fps);
 		fps = g_fps = g_avi_fps;
@@ -297,7 +303,7 @@ static void present_loop(double fps, uint32_t seq)
 	for (;;) {
 		wait_for_field(target);
 		if (g_quit) break;
-		if (now() - tstat > 0.5) { tstat = now(); write_status(ring_shown / fps, starved); }
+		if (now() - tstat > 0.5) { tstat = now(); write_status((ring_shown - ring_base) / fps, starved); }
 		if (g_pause) {                 /* hold: keep the clock pinned to now */
 			target = stat->field_cnt + 1;
 			continue;
@@ -320,8 +326,8 @@ static void present_loop(double fps, uint32_t seq)
 	}
 	double dt = now() - t0;
 	ring_eof = 1;                      /* tells the audio thread to wind down */
-	write_status(ring_shown / fps, starved);
-	blank_screen(++seq);
+	write_status((ring_shown - ring_base) / fps, starved);
+	if (!g_hold) blank_screen(++seq);
 	printf("%d frames in %.1fs (%.2f fps), avg read %.1f ms, %d starved slots, max %d frames ahead%s\n",
 	       n, dt, n / dt, n ? stat_read_ms / n : 0, starved, max_ahead, g_quit ? ", stopped" : "");
 }
@@ -535,8 +541,10 @@ int main(int argc, char **argv)
 		if (getenv("PLEXFB_AOFF"))  g_aoff  = atof(getenv("PLEXFB_AOFF"));
 		if (fcntl(0, F_SETPIPE_SZ, 4 << 20) < 0) perror("F_SETPIPE_SZ (ignored)");
 		signal(SIGUSR1, on_usr1);
+		signal(SIGUSR2, on_usr2);
 		signal(SIGTERM, on_term);
 		signal(SIGINT, on_term);
+		if (hdr->magic == MAGIC) ring_base = ring_filled = ring_shown = (hdr->buf + 1) % RING;
 		afifo = malloc(AFIFO_BYTES);
 		write_status(0, 0);            /* "starting": the UI stops drawing now */
 		aplay = getenv("PLEXFB_MUTE") ? fopen("/dev/null", "w")

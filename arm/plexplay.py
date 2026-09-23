@@ -29,7 +29,8 @@ Robustness:
     the transcoder alive, records the resume point and marks the item watched;
   - if the pipeline dies before the end (network drop, server restart) playback
     restarts from the last shown position, up to RETRIES times;
-  - stop/seek/end all shut the transcode session down.
+  - stop/seek/end all shut the transcode session down; a seek leaves the
+    last frame on screen until the new stream's first frame.
 """
 import os, sys, uuid, subprocess, signal, threading, time, errno, stat as st_
 import urllib.request, urllib.parse, urllib.error
@@ -255,19 +256,22 @@ class Player:
             t = max(0.0, min(t, self.duration - END_SLACK))
             log('seek %.1f -> %.1f' % (pos, t))
             with self.lock: self.pending = ('seek', t)
-            self.interrupt()
+            self.interrupt(hold=True)
         elif c == 'stop':
             with self.lock: self.pending = 'stop'
             self.interrupt()
         else:
             log('unknown command %r' % line)
 
-    def interrupt(self):
+    def interrupt(self, hold=False):
         # ffmpeg first so its pipe is never the thing that fails, then plexfb,
-        # which blanks the screen and exits; the main loop sees it and acts
+        # which exits (blanking the screen, or with hold keeping its last
+        # frame up for the next presenter); the main loop sees it and acts
         for p in (self.p_ff, self.p_fb):
             if p and p.poll() is None:
-                try: p.terminate()
+                try:
+                    if hold and p is self.p_fb: p.send_signal(signal.SIGUSR2)
+                    else: p.terminate()
                 except Exception: pass
 
     def fifo_thread(self):
