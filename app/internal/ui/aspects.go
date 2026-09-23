@@ -24,8 +24,9 @@ type Aspects struct {
 }
 
 const (
-	aspectProbes = 8               // shows probed at once
-	aspectBudget = 6 * time.Second // per batch; the rest stay visible until next time
+	aspectProbes = 8                       // shows probed at once
+	aspectBudget = 6 * time.Second         // per batch; the rest stay visible until next time
+	aspectWait   = 1500 * time.Millisecond // how long a listing waits for the sweep before showing
 )
 
 func (a *Aspects) load(dir string) {
@@ -77,8 +78,8 @@ func (a *Aspects) apply(items []*plex.Item) (unknown []*plex.Item) {
 }
 
 // sweep starts the one-off library sweep if it has not started, and
-// returns the channel closed when it is done.
-func (a *Aspects) sweep(client *plex.Client) <-chan struct{} {
+// returns the channel closed when it is done; then is called on completion.
+func (a *Aspects) sweep(client *plex.Client, then func()) <-chan struct{} {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.swept != nil {
@@ -88,6 +89,7 @@ func (a *Aspects) sweep(client *plex.Client) <-chan struct{} {
 	a.swept = done
 	go func() {
 		defer close(done)
+		defer then()
 		secs, err := client.Sections()
 		if err != nil {
 			return
@@ -124,9 +126,13 @@ func (a *App) measureShows(items []*plex.Item) {
 	if unknown := a.aspects.apply(items); len(unknown) == 0 {
 		return
 	}
+	// a cold cache: give the sweep a moment, then show what is known and
+	// let the sweep's completion refilter the home rows
 	select {
-	case <-a.aspects.sweep(client):
-	case <-time.After(time.Until(deadline)):
+	case <-a.aspects.sweep(client, func() { a.Later(a.refilterHome) }):
+	case <-time.After(aspectWait):
+		a.aspects.apply(items)
+		return
 	}
 	unknown := a.aspects.apply(items)
 	if len(unknown) == 0 {
@@ -153,6 +159,17 @@ func (a *App) measureShows(items []*plex.Item) {
 	}
 	wg.Wait()
 	a.aspects.save()
+}
+
+// refilterHome asks the home screen to fetch its rows again, now that the
+// sweep can judge the shows in them.
+func (a *App) refilterHome() {
+	if len(a.stack) > 0 {
+		if h, ok := a.stack[0].(*Home); ok {
+			h.refreshAt = time.Time{}
+		}
+	}
+	a.pagers = map[string]*Pager{} // library views opened next start from known shapes
 }
 
 // measureHubs runs measureShows over every row of a home fetch.
