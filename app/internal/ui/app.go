@@ -106,7 +106,6 @@ type App struct {
 	lastFocus     focusPosition
 	focusReady    bool
 	accountLookup bool // UI-thread owned; prevents overlapping account-name requests
-	splash        startupSplash
 }
 
 // SetCacheDir sets where artwork is cached.
@@ -132,7 +131,6 @@ func New(c *plex.Client, out Presenter, player *Player, lg *log.Logger) *App {
 		Small: gfx.Load("reg16"), SmallBold: gfx.Load("med16"), Big: gfx.Load("bold28"), Mark: gfx.Load("condit24"),
 		MarkZ: gfx.Load("blackit26"), MarkM: gfx.Load("blackit17")}
 	a.Mark = NewWordmark()
-	prepareSplash()
 	warmFades(720, 480)
 	return a
 }
@@ -584,9 +582,6 @@ func (a *App) runLater() {
 // Start shows the first screen: home when a server is on record (or a
 // client was given), the sign-in otherwise.
 func (a *App) Start() {
-	if !a.splash.started {
-		a.splash.enabled = true
-	}
 	// the core keeps its overlay plane and sprites across a restart of
 	// this process: take them down before anything is on screen
 	if r, ok := a.Out.(*ring.Ring); ok && a.osd == nil {
