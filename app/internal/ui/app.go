@@ -102,6 +102,7 @@ type App struct {
 	pagers map[string]*Pager // listings kept for the session, by path and query
 	// CacheDir is where artwork is kept (for a client made after sign-in).
 	cacheDir      string
+	aspects       Aspects // show shapes for the 4:3 filter
 	theme         Theme
 	lastFocus     focusPosition
 	focusReady    bool
@@ -109,7 +110,7 @@ type App struct {
 }
 
 // SetCacheDir sets where artwork is cached.
-func (a *App) SetCacheDir(dir string) { a.cacheDir = dir }
+func (a *App) SetCacheDir(dir string) { a.cacheDir = dir; a.aspects.load(dir) }
 
 // New builds the app around a client and a presenter.
 func New(c *plex.Client, out Presenter, player *Player, lg *log.Logger) *App {
@@ -246,7 +247,11 @@ func (a *App) pager(path string, q url.Values, filter func(*plex.Item) bool) *Pa
 	if p := a.pagers[key]; p != nil {
 		return p
 	}
-	p := NewPager(a.Plex, path, q, a.Wake, filter)
+	var prepare func([]*plex.Item)
+	if filter != nil {
+		prepare = a.measureShows // shows need a probe before the filter can judge them
+	}
+	p := NewPager(a.Plex, path, q, a.Wake, filter, prepare)
 	a.pagers[key] = p
 	return p
 }

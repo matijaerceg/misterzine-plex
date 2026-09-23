@@ -110,6 +110,7 @@ func (s *Search) accept(gen int, items []*plex.Item, err error) {
 		s.message = "Search unavailable. Select Results to retry."
 		return
 	}
+	s.app.aspects.apply(items)
 	for _, it := range items {
 		if s.app.Keep(it) {
 			s.items = append(s.items, it)

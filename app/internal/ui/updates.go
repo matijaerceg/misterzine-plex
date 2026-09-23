@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"plexcrt/internal/beta"
 	"plexcrt/internal/gfx"
 	"plexcrt/internal/input"
@@ -36,7 +37,17 @@ func (a *App) checkUpdates(manual bool, now time.Time) {
 	root := a.betaDir()
 	go func() {
 		cached, cacheErr := updates.Cached(root)
-		c, err := updates.Fetch(context.Background(), nil, updates.CatalogueURL)
+		var c updates.Catalogue
+		var err error
+		if file := os.Getenv("PLEXCRT_CATALOGUE_FILE"); file != "" {
+			// a local catalogue stands in for the published one (testing)
+			var data []byte
+			if data, err = os.ReadFile(file); err == nil {
+				c, err = updates.Parse(data)
+			}
+		} else {
+			c, err = updates.Fetch(context.Background(), nil, updates.CatalogueURL)
+		}
 		if err == nil {
 			_ = updates.SaveCache(root, c)
 		}

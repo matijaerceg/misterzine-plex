@@ -390,6 +390,22 @@ func (c *Client) Items(path string, q url.Values, max int) ([]*Item, error) {
 	return out, nil
 }
 
+// ShowAspect is the picture aspect of a show's first episode (0 when the
+// server has not measured it), one small request per show.
+func (c *Client) ShowAspect(ratingKey string) (float64, error) {
+	q := url.Values{}
+	q.Set("excludeFields", "summary,tagline")
+	q.Set("excludeElements", "Genre,Director,Writer,Role,Country,Producer,Guid,Collection,Label,Field,Image,Stream,Marker,UltraBlurColors")
+	items, err := c.Items("/library/metadata/"+ratingKey+"/allLeaves", q, 1)
+	if err != nil {
+		return 0, err
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	return items[0].Aspect, nil
+}
+
 // Page fetches items [start, start+size) of a listing and the total count.
 func (c *Client) Page(path string, q url.Values, start, size int) ([]*Item, int, error) {
 	if q == nil {

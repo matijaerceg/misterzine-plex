@@ -158,7 +158,8 @@ func (d *Drawer) compose() {
 		}
 		title := it.Title
 		if it.Type == "options" && d.app.updateAvailable() {
-			title = "Options  •"
+			// a badge: an update is waiting under Options
+			disc(c, MenuX+f.Width(title)+14, y+f.Height()/2, 4, gfx.Amber)
 		}
 		if it.Type == "section" && d.app.Showcase {
 			if section, ok := d.app.section(it.Key); ok {

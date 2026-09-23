@@ -26,18 +26,22 @@ type Pager struct {
 	// the kept items packed into list; total is then what has been kept
 	// so far, and the alphabet index does not apply
 	filter func(*plex.Item) bool
-	list   []*plex.Item
-	next   int  // next raw page to fetch
-	done   bool // every raw page has been seen
+	// Prepare, if set, completes a page's items (in the fetching goroutine)
+	// before the filter sees them: shows are probed for their shape
+	Prepare func([]*plex.Item)
+	list    []*plex.Item
+	next    int  // next raw page to fetch
+	done    bool // every raw page has been seen
 }
 
 const pageSize = 60
 
 // NewPager starts loading the first page; wake is signalled as pages land.
-// A filter, if given, hides items it rejects.
-func NewPager(c *plex.Client, path string, q url.Values, wake chan struct{}, filter func(*plex.Item) bool) *Pager {
+// A filter, if given, hides items it rejects; prepare, if given, completes
+// each page's items before the filter sees them.
+func NewPager(c *plex.Client, path string, q url.Values, wake chan struct{}, filter func(*plex.Item) bool, prepare func([]*plex.Item)) *Pager {
 	p := &Pager{client: c, path: path, query: q, items: map[int]*plex.Item{}, inFlt: map[int]bool{},
-		Wake: wake, total: -1, filter: filter}
+		Wake: wake, total: -1, filter: filter, Prepare: prepare}
 	p.Want(0)
 	return p
 }
@@ -142,6 +146,9 @@ func (p *Pager) fetch(n int) {
 	}
 	q.Set("excludeElements", ex)
 	items, total, err := p.client.Page(p.path, q, n*pageSize, pageSize)
+	if err == nil && p.filter != nil && p.Prepare != nil {
+		p.Prepare(items)
+	}
 	p.mu.Lock()
 	delete(p.inFlt, n)
 	if err != nil {

@@ -110,6 +110,9 @@ func (h *Home) focusSeason(i int) {
 func (h *Home) reload() {
 	h.refreshResult = nil // discard any older background request
 	hubs, err := fetchHome(h.app.Plex)
+	if err == nil {
+		h.app.measureHubs(hubs)
+	}
 	h.load(hubs, err)
 }
 
@@ -205,6 +208,9 @@ func (h *Home) pollHome(now time.Time) {
 	client := h.app.Plex
 	go func() {
 		hubs, err := fetchHome(client)
+		if err == nil {
+			h.app.measureHubs(hubs)
+		}
 		result <- homeResult{hubs, err}
 		select {
 		case h.app.Wake <- struct{}{}:

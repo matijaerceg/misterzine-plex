@@ -15,7 +15,11 @@ Detailed behavior and display settings. For everyday help, see the
   activates it. Up opens the scrubber. Back closes the controls; Back with the
   controls hidden stops playback. Audio/subtitle menus use the same controls.
 - Options contains video mode, theme music, navigation taps, autoplay, bitrate,
-  the 4:3 filter, server selection and sign-out.
+  the 4:3 filter, server selection and sign-out. The 4:3 filter applies to the
+  home rows, search and the alphabetical library view. Movies and episodes are
+  judged by their own picture; a show by its first episode, measured once on
+  first sight and remembered in the cache folder. An update waiting under
+  Options is marked with an amber dot in the menu.
 - To leave the app, open MiSTer's OSD and return to the MiSTer Menu core.
 
 ### Sound and playback quality
