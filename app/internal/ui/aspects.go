@@ -12,12 +12,15 @@ import (
 
 // Aspects remembers the picture shape of shows, taken from each show's
 // first episode, so the 4:3 filter can judge a show the way it judges a
-// movie. A show is probed once and the answer kept on disk in the cache
-// folder; until it is known the show stays visible.
+// movie. The first time the filter needs them, every TV library is swept
+// in one request each; the few shows that leaves out are probed one by one.
+// Answers are kept on disk in the cache folder. Until a show is known it
+// stays visible.
 type Aspects struct {
 	mu    sync.Mutex
-	known map[string]float64 // show rating key -> aspect (0: probed, unknown)
+	known map[string]float64 // show rating key -> aspect (0: seen, unknown)
 	path  string
+	swept chan struct{} // closed when the library sweep has finished; nil before it starts
 }
 
 const (
@@ -30,6 +33,7 @@ func (a *Aspects) load(dir string) {
 	defer a.mu.Unlock()
 	a.path = filepath.Join(dir, "aspects.json")
 	a.known = map[string]float64{}
+	a.swept = nil
 	if data, err := os.ReadFile(a.path); err == nil {
 		_ = json.Unmarshal(data, &a.known)
 	}
@@ -49,6 +53,12 @@ func (a *Aspects) save() {
 	}
 }
 
+func (a *Aspects) set(key string, v float64) {
+	a.mu.Lock()
+	a.known[key] = v
+	a.mu.Unlock()
+}
+
 // apply fills in the aspect of shows already known, without any request.
 func (a *Aspects) apply(items []*plex.Item) (unknown []*plex.Item) {
 	a.mu.Lock()
@@ -66,19 +76,62 @@ func (a *Aspects) apply(items []*plex.Item) (unknown []*plex.Item) {
 	return unknown
 }
 
-// measure fills in the aspect of every show in items, probing the ones not
-// seen before (a few at a time, within a time budget). Safe from any
-// goroutine; meant for the workers that fetch listings.
+// sweep starts the one-off library sweep if it has not started, and
+// returns the channel closed when it is done.
+func (a *Aspects) sweep(client *plex.Client) <-chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.swept != nil {
+		return a.swept
+	}
+	done := make(chan struct{})
+	a.swept = done
+	go func() {
+		defer close(done)
+		secs, err := client.Sections()
+		if err != nil {
+			return
+		}
+		for _, s := range secs {
+			if s.Type != "show" {
+				continue
+			}
+			found, err := client.FirstEpisodeAspects(s.Key)
+			if err != nil {
+				continue
+			}
+			a.mu.Lock()
+			for key, v := range found {
+				a.known[key] = v
+			}
+			a.mu.Unlock()
+		}
+		a.save()
+	}()
+	return done
+}
+
+// measureShows fills in the aspect of every show in items: from the
+// library sweep first, then by probing what it missed (a few at a time,
+// within a time budget). Safe from any goroutine; meant for the workers
+// that fetch listings.
 func (a *App) measureShows(items []*plex.Item) {
 	if a.Plex == nil || a.Cfg == nil || !a.Cfg.FourThree {
 		return
+	}
+	client := a.Plex
+	deadline := time.Now().Add(aspectBudget)
+	if unknown := a.aspects.apply(items); len(unknown) == 0 {
+		return
+	}
+	select {
+	case <-a.aspects.sweep(client):
+	case <-time.After(time.Until(deadline)):
 	}
 	unknown := a.aspects.apply(items)
 	if len(unknown) == 0 {
 		return
 	}
-	client := a.Plex
-	deadline := time.Now().Add(aspectBudget)
 	sem := make(chan struct{}, aspectProbes)
 	var wg sync.WaitGroup
 	for _, it := range unknown {
@@ -94,9 +147,7 @@ func (a *App) measureShows(items []*plex.Item) {
 			if err != nil {
 				return // left unknown: visible now, probed again next time
 			}
-			a.aspects.mu.Lock()
-			a.aspects.known[it.RatingKey] = v
-			a.aspects.mu.Unlock()
+			a.aspects.set(it.RatingKey, v)
 			it.Aspect = v
 		}(it)
 	}

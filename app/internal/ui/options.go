@@ -238,6 +238,14 @@ func (o *Options) Draw(c *gfx.Canvas, now time.Time) bool {
 		}
 		y += MenuRowH
 	}
+	// more rows above or below the window: a chevron at the edge
+	cx := MenuX + MenuWidth/2
+	if first > 0 {
+		chevron(c, cx, ListY0-10, true, gfx.GreyLo)
+	}
+	if first+visibleRows < len(items) {
+		chevron(c, cx, y+2, false, gfx.GreyLo)
+	}
 	if o.app.Build != "" {
 		o.app.text(c, MenuX, SafeBottom-48, f.Small, gfx.GreyLo, f.Small.Fit("Build: "+o.app.Build, MenuWidth))
 	}

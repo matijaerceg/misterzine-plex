@@ -406,6 +406,41 @@ func (c *Client) ShowAspect(ratingKey string) (float64, error) {
 	return items[0].Aspect, nil
 }
 
+// FirstEpisodeAspects is the picture aspect of every show in a TV library
+// that has a first episode of some season, keyed by the show's rating key
+// and taken from its lowest season: one request for the whole library.
+func (c *Client) FirstEpisodeAspects(sectionKey string) (map[string]float64, error) {
+	q := url.Values{}
+	q.Set("type", "4")
+	q.Set("episode.index", "1")
+	q.Set("excludeFields", "summary,tagline")
+	q.Set("excludeElements", "Genre,Director,Writer,Role,Country,Producer,Guid,Collection,Label,Field,Image,Stream,Marker,UltraBlurColors")
+	q.Set("X-Plex-Container-Start", "0")
+	q.Set("X-Plex-Container-Size", "20000")
+	data, err := c.Get("/library/sections/"+sectionKey+"/all", q)
+	if err != nil {
+		return nil, err
+	}
+	var mc xmlContainer
+	if err := xml.Unmarshal(data, &mc); err != nil {
+		return nil, err
+	}
+	out := map[string]float64{}
+	season := map[string]int{}
+	for i := range mc.Items {
+		x := &mc.Items[i]
+		if x.GrandparentKey == "" || len(x.Medias) == 0 || x.Medias[0].Aspect == 0 {
+			continue
+		}
+		if s, seen := season[x.GrandparentKey]; seen && s <= x.ParentIndex {
+			continue
+		}
+		season[x.GrandparentKey] = x.ParentIndex
+		out[x.GrandparentKey] = x.Medias[0].Aspect
+	}
+	return out, nil
+}
+
 // Page fetches items [start, start+size) of a listing and the total count.
 func (c *Client) Page(path string, q url.Values, start, size int) ([]*Item, int, error) {
 	if q == nil {

@@ -110,8 +110,8 @@ func (w *Wall) load() {
 		q[k] = vals
 	}
 	var filter func(*plex.Item) bool
-	if w.app.Cfg != nil && w.app.Cfg.FourThree && v.az {
-		filter = w.app.Keep
+	if w.app.Cfg != nil && w.app.Cfg.FourThree {
+		filter = w.app.Keep // every view: the listing is walked and packed
 	}
 	path := strings.Replace(v.path, "%s", w.section.Key, 1)
 	w.pager = w.app.pager(path, q, filter)
