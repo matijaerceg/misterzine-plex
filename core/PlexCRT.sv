@@ -69,7 +69,7 @@ localparam CONF_STR = {
 	"O[8],HDMI scaling,Normal,Integer height;",
 	"O[6],Force 480i,Off,On;",
 	"P1,HDMI setup help;",
-	"P1-,Resolution: set in MiSTer INI;",
+	"P1-,Resolution: MiSTer INI;",
 	"P1-;",
 	"P1-,Full height: Normal scaling;",
 	"P1-,  vscale_mode=0;",
