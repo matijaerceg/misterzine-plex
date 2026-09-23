@@ -193,6 +193,30 @@ def unpack(archive, destination, release):
     return package
 
 
+ERROR_LOG = 'updates/last-error.log'
+
+
+def reason(exc):
+    """The message of an error this service or the manager raised on purpose;
+    other errors are named only, so URLs, credentials or child output never
+    reach the screen or the status file."""
+    return str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
+
+
+def failed(root, release, summary, exc):
+    """Record why an update step failed: the status the app shows carries a
+    short reason, and the error log keeps the last few for diagnostics."""
+    why = reason(exc)
+    log = root / ERROR_LOG
+    try:
+        lines = log.read_text(errors='replace').splitlines()[-19:] if log.is_file() else []
+        lines.append(time.strftime('%Y-%m-%d %H:%M:%S ') + summary + ': ' + why)
+        manager.atomic(log, ('\n'.join(lines) + '\n').encode())
+    except OSError:
+        pass
+    status(root, 'failed', release, summary + ': ' + why + '. Your current version will keep working.')
+
+
 def prepare(card, release, downloader=download):
     root = root_for(card)
     releases.entry(release)
@@ -221,8 +245,8 @@ def prepare(card, release, downloader=download):
                     name: manager.digest(ready / name) for name in HELPERS + ('manifest.json',)})
             manager.write_json(root / 'updates/ready.json', release)
             status(root, 'ready', release, 'Ready to restart')
-        except Exception:
-            status(root, 'failed', release, 'Update could not be prepared. Your current version will keep working.')
+        except Exception as exc:
+            failed(root, release, 'Update could not be prepared', exc)
             raise
 
 
@@ -324,10 +348,10 @@ def activate(card, launch=start_and_check):
                 register(card, release)
             if not launch(root):
                 raise RuntimeError('The new release did not start')
-        except Exception:
+        except Exception as exc:
             if not stopped:
                 (root / 'updates/activation.json').unlink(missing_ok=True)
-                status(root, 'failed', release, 'Could not restart Plex. Your current version will keep working.')
+                failed(root, release, 'Could not restart Plex', exc)
                 raise
             stop_manager(root)
             with manager.locked(root):

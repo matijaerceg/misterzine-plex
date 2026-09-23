@@ -140,6 +140,15 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(OSError):
             service.prepare(self.card, r, fail)
         self.assertEqual(manager.read_state(self.root)['current'], 'old')
+        # The reason reaches the status the app shows and the error log, but an
+        # unexpected error is named only, never echoed.
+        status = json.loads((self.root / 'updates/status.json').read_text())
+        self.assertIn('Update could not be prepared: OSError.', status['message'])
+        log = (self.root / service.ERROR_LOG).read_text().splitlines()
+        self.assertEqual(len(log), 2)
+        self.assertIn('failed verification', log[0])
+        self.assertTrue(log[1].endswith('Update could not be prepared: OSError'))
+        self.assertNotIn('synthetic failure', log[1])
 
     def test_external_staging_is_reused_without_running_downloader(self):
         r, z, _ = self.release()

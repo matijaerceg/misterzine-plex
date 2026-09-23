@@ -292,8 +292,9 @@ def diagnostics(root):
         except (OSError, ValueError):
             pass
     report = {'release': read_state(root), 'kernel': os.uname().release, 'logs': {}}
-    for name in ('misterzine-plex.log', 'plexplay.log'):
-        path = Path('/tmp') / name
+    logs = {name: Path('/tmp') / name for name in ('misterzine-plex.log', 'plexplay.log')}
+    logs['last-error.log'] = root / 'updates/last-error.log'
+    for name, path in logs.items():
         if path.is_file():
             with path.open('rb') as src:
                 src.seek(max(0, path.stat().st_size - 64 * 1024))
