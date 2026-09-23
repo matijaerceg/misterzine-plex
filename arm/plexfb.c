@@ -342,13 +342,13 @@ static void present_loop(double fps, uint32_t seq)
  *
  *   PLEXFB_ALEAD  seconds of audio kept queued ahead of the picture (default 0.10,
  *                 roughly aplay's buffer so it never runs dry)
- *   PLEXFB_AOFF   extra audio delay in seconds, positive = later (default 0)
+ *   PLEXFB_AOFF   extra audio delay in seconds, positive = later (default 0.08)
  */
 #define AFIFO_BYTES (48000 * 4 * 8)          /* 8 s of S16 stereo */
 #define ABPS        (48000.0 * 4)
 static uint8_t *afifo;
 static volatile size_t a_w = 0, a_r = 0;     /* monotonic byte counters */
-static double g_alead = 0.10, g_aoff = 0.08;   /* 80 ms: measured on the CRT with the sweep clip */   /* 80 ms: measured on the CRT with the sweep clip */
+static double g_alead = 0.10, g_aoff = 0.08;   /* 80 ms: measured on the CRT with the sweep clip */
 static FILE *aplay;
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -448,7 +448,7 @@ static void *audio_thread(void *arg)
 	int dbg = getenv("PLEXFB_DEBUG") != NULL;
 	double tlast = now();
 	for (;;) {
-		double tv = (double)ring_shown / g_fps;   /* picture time on screen */
+		double tv = (double)(ring_shown - ring_base) / g_fps;   /* picture time on screen */
 		double ta = (double)a_r / ABPS;           /* audio time handed to aplay */
 		if (dbg && now() - tlast > 1.0) {
 			tlast = now();
