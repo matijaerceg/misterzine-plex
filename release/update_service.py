@@ -7,7 +7,9 @@ No Update All execution is needed. Downloader itself retains its GPL-3.0 license
 """
 import argparse
 import contextlib
+import errno
 import hashlib
+import http.client
 import io
 import json
 import lzma
@@ -35,6 +37,20 @@ BOOTSTRAP_SHA = 'e19ed080deb4ac67f646e4318438427243e2f65fb95c0a1b6e738be4d8ad490
 BOOTSTRAP_ZIP_SHA = '93c247f04c0082ba724abbd6e041a166351c7c758fe114e52447575aae9a65ed'
 HELPERS = manager.HELPERS
 SCRIPT_NAMES = ('Run', 'Rollback', 'Diagnostics', 'Uninstall')
+
+
+class Reason(ValueError):
+    """A download problem this service names itself. Only its text may be
+    echoed; any other error is described in fixed words, since library
+    errors can carry addresses or credentials in their messages."""
+
+
+class DownloadError(RuntimeError):
+    """A download failure whose message is for the person at the screen and
+    whose detail, in the same fixed vocabulary, is for the error log."""
+    def __init__(self, message, detail):
+        super().__init__(message)
+        self.detail = detail
 
 
 def root_for(card):
@@ -112,10 +128,10 @@ def engine(card, bootstrap=True):
         releases.https(response.geturl())
         raw = response.read(2 * 1024 * 1024)
     if hashlib.sha256(raw).hexdigest() != BOOTSTRAP_SHA:
-        raise ValueError('Downloader bootstrap verification failed')
+        raise Reason('Downloader bootstrap verification failed')
     data = lzma.decompress(raw.split(b'\n', 7)[7])
     if hashlib.sha256(data).hexdigest() != BOOTSTRAP_ZIP_SHA or not zipfile.is_zipfile(io.BytesIO(data)):
-        raise ValueError('Downloader archive verification failed')
+        raise Reason('Downloader archive verification failed')
     manager.atomic(archive, data)
     return [sys.executable, str(archive)]
 
@@ -184,8 +200,10 @@ def network_reason(exc):
     headers and bodies stay out of it."""
     if isinstance(exc, urllib.error.HTTPError):
         return 'was refused the release file (HTTP ' + str(exc.code) + ')'
-    if isinstance(exc, (ValueError, RuntimeError)):
+    if isinstance(exc, Reason):
         return str(exc)
+    if isinstance(exc, http.client.HTTPException):
+        return 'got a broken response'
     cause = getattr(exc, 'reason', exc)
     if isinstance(cause, socket.gaierror):
         return 'could not resolve the download host'
@@ -195,17 +213,24 @@ def network_reason(exc):
         return 'timed out'
     if isinstance(cause, (ConnectionRefusedError, ConnectionResetError)):
         return 'could not connect'
+    if isinstance(cause, OSError) and cause.errno == errno.ENOSPC:
+        return 'found no free space'
+    if isinstance(cause, OSError) and cause.errno == errno.EROFS:
+        return 'found the card read-only'
     if isinstance(cause, OSError) and cause.errno is not None:
         return 'failed with ' + os.strerror(cause.errno).lower()
+    if isinstance(cause, str):
+        return 'could not connect'
     return 'failed with ' + type(cause).__name__
 
 
-class DownloadError(RuntimeError):
-    """A download failure whose message is for the person at the screen and
-    whose detail, in the same fixed vocabulary, is for the error log."""
-    def __init__(self, message, detail):
-        super().__init__(message)
-        self.detail = detail
+def local_fault(detail):
+    """The board's own storage problem, when that is what both paths hit."""
+    if 'no free space' in detail:
+        return 'your SD card has no free space'
+    if 'card read-only' in detail:
+        return 'your SD card is read-only. Check it in MiSTer'
+    return None
 
 
 PROBE_URL = 'https://github.com/'
@@ -225,7 +250,8 @@ def verdict(opener=None, now=time.time):
     try:
         with opener(urllib.request.Request(PROBE_URL, method='HEAD'), timeout=20) as response:
             response.read(1)
-    except urllib.error.HTTPError:
+    except (urllib.error.HTTPError, http.client.HTTPException):
+        # An answer, even a refusal or a broken one, means GitHub was reached.
         return None
     except (OSError, urllib.error.URLError) as exc:
         cause = network_reason(exc)
@@ -250,20 +276,23 @@ def fetch_release(card, root, release, opener=None):
     digest, size = hashlib.sha256(), 0
     try:
         with opener(release['url'], timeout=60) as response, part.open('wb') as out:
-            releases.https(response.geturl())
+            try:
+                releases.https(response.geturl())
+            except ValueError:
+                raise Reason('was redirected to an insecure address')
             while True:
                 chunk = response.read(256 * 1024)
                 if not chunk:
                     break
                 size += len(chunk)
                 if size > release['size']:
-                    raise ValueError('found the release file larger than published')
+                    raise Reason('found the release file larger than published')
                 digest.update(chunk)
                 out.write(chunk)
             out.flush()
             os.fsync(out.fileno())
         if size != release['size'] or digest.hexdigest() != release['sha256']:
-            raise ValueError('found the release file changed or incomplete')
+            raise Reason('found the release file changed or incomplete')
         os.replace(part, staging / 'package.zip')
     finally:
         part.unlink(missing_ok=True)
@@ -291,19 +320,20 @@ def download(card, root, release, runner=subprocess.run, fetch=fetch_release, pr
         problems.append('Downloader ' + downloader_reason(log, result.returncode))
     except subprocess.TimeoutExpired:
         problems.append('Downloader timed out')
-    except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError, http.client.HTTPException) as exc:
         problems.append('Downloader setup ' + network_reason(exc))
     # Downloader could not stage the release. Fetch it directly so one broken
     # Downloader setup does not block every update, and record both outcomes.
     status(root, 'download', release, 'Downloading release directly...')
     try:
         fetch(card, root, release)
-    except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError, http.client.HTTPException) as exc:
         problems.append('direct download ' + network_reason(exc))
-        # Both paths failed. Say whose problem it is: the board's clock or
-        # connection, or the release when GitHub itself answers.
-        why = probe() or 'GitHub is reachable, so the release itself is at fault. Please report this'
-        raise DownloadError('Download failed: ' + why + '.', '; '.join(problems))
+        # Both paths failed. Say whose problem it is: the board's card, clock
+        # or connection, or the release when GitHub itself answers.
+        detail = '; '.join(problems)
+        why = local_fault(detail) or probe() or 'GitHub is reachable, but the release could not be fetched. Try again later or report this'
+        raise DownloadError('Download failed: ' + why + '.', detail)
     with log.open('ab') as out:
         out.write(('\n' + '; '.join(problems) + '. The release was then fetched directly.\n').encode())
 
@@ -614,7 +644,8 @@ def main():
 def cli():
     try:
         main()
-    except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile,
+            http.client.HTTPException) as exc:
         # Do not echo URLs, credentials, or arbitrary child output.
         print(str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Operation failed. Check network, free space and the installed package.', file=sys.stderr)
         if getattr(exc, 'detail', ''):

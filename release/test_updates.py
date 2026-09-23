@@ -271,7 +271,7 @@ class UpdateTests(unittest.TestCase):
             service.prepare(self.card, r, lambda card, root, release: service.download(
                 card, root, release, self.failing_runner(output), lambda *a: service.fetch_release(*a, opener=refused), lambda: None))
         status = json.loads((self.root / 'updates/status.json').read_text())
-        self.assertIn('Download failed: GitHub is reachable, so the release itself is at fault. Please report this.', status['message'])
+        self.assertIn('Download failed: GitHub is reachable, but the release could not be fetched. Try again later or report this.', status['message'])
         self.assertNotIn('Downloader', status['message'])
         log = (self.root / service.ERROR_LOG).read_text()
         self.assertIn('[Downloader rejected its certificate option (exit 1); '
@@ -287,6 +287,54 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), 'Download failed: your MiSTer cannot look up GitHub. Check its network connection and DNS.')
         self.assertEqual(caught.exception.detail, 'Downloader setup could not resolve the download host; '
                          'direct download could not resolve the download host')
+
+    def test_library_errors_and_broken_responses_stay_in_fixed_words(self):
+        r, z, _ = self.release()
+        (self.card / 'Scripts').mkdir(); (self.card / 'Scripts/downloader.sh').touch()
+        (self.root / 'updates').mkdir()
+        e = service.urllib.error
+        # A library error message, such as a malformed redirect that urlsplit
+        # rejects, may carry an address or credentials: it is named only.
+        self.assertEqual(service.network_reason(ValueError('Invalid IPv6 URL https://user:hunter2@evil.example/')), 'failed with ValueError')
+        self.assertEqual(service.network_reason(RuntimeError('https://user:hunter2@evil.example/')), 'failed with RuntimeError')
+        self.assertEqual(service.network_reason(service.http.client.IncompleteRead(b'partial')), 'got a broken response')
+        self.assertEqual(service.network_reason(service.Reason('was redirected to an insecure address')), 'was redirected to an insecure address')
+        # A redirect to a credential-bearing or insecure address is refused in fixed words.
+        class Redirected(io.BytesIO):
+            def geturl(self):
+                return 'https://user:hunter2@evil.example/package.zip'
+        with self.assertRaises(service.Reason) as caught:
+            service.fetch_release(self.card, self.root, r, lambda url, timeout: Redirected(z.read_bytes()))
+        self.assertEqual(str(caught.exception), 'was redirected to an insecure address')
+        # A truncated HTTP response during the direct fetch, or while
+        # bootstrapping Downloader, is handled and reported like any other failure.
+        class Truncated(io.BytesIO):
+            def geturl(self):
+                return 'https://objects.example.org/package.zip'
+            def read(self, n=-1):
+                raise service.http.client.IncompleteRead(b'partial')
+        with self.assertRaises(RuntimeError) as caught:
+            service.download(self.card, self.root, r, self.failing_runner(b'Bad status code 500'),
+                             lambda *a: service.fetch_release(*a, opener=lambda url, timeout: Truncated()), lambda: None)
+        self.assertEqual(caught.exception.detail, 'Downloader got a server error (exit 1); direct download got a broken response')
+        self.assertNotIn('partial', str(caught.exception) + caught.exception.detail)
+        (self.card / 'Scripts/downloader.sh').unlink()
+        with patch.object(service.urllib.request, 'urlopen', lambda url, timeout: Truncated()):
+            service.download(self.card, self.root, r, self.failing_runner(b''), lambda *a: service.fetch_release(*a, opener=self.opener(z.read_bytes())))
+        self.assertIn('Downloader setup got a broken response. The release was then fetched directly.',
+                      (self.root / 'updates/download-output.log').read_text())
+
+    def test_full_or_read_only_card_is_not_blamed_on_the_release(self):
+        r, _, _ = self.release()
+        (self.card / 'Scripts').mkdir(); (self.card / 'Scripts/downloader.sh').touch()
+        (self.root / 'updates').mkdir()
+        for code, output, expected in ((service.errno.ENOSPC, b'OSError: [Errno 28] No space left on device', 'your SD card has no free space'),
+                                       (service.errno.EROFS, b'OSError: [Errno 30] Read-only file system', 'your SD card is read-only. Check it in MiSTer')):
+            def fetch(*a, code=code):
+                raise OSError(code, service.os.strerror(code))
+            with self.assertRaises(RuntimeError) as caught:
+                service.download(self.card, self.root, r, self.failing_runner(output), fetch, lambda: self.fail('no probe needed'))
+            self.assertEqual(str(caught.exception), 'Download failed: ' + expected + '.')
 
     def test_verdict_separates_the_board_from_the_release(self):
         e = service.urllib.error
@@ -338,7 +386,8 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(service.network_reason(e.URLError(ConnectionRefusedError())), 'could not connect')
         self.assertEqual(service.network_reason(e.URLError(OSError(101, 'Network is unreachable'))), 'failed with network is unreachable')
         self.assertEqual(service.network_reason(e.URLError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed')), 'could not verify the server certificate')
-        self.assertEqual(service.network_reason(ValueError('Downloader archive verification failed')), 'Downloader archive verification failed')
+        self.assertEqual(service.network_reason(service.Reason('Downloader archive verification failed')), 'Downloader archive verification failed')
+        self.assertEqual(service.network_reason(ValueError('Downloader archive verification failed')), 'failed with ValueError')
 
     def test_diagnostics_include_download_logs_without_addresses(self):
         (self.root / 'updates').mkdir()
