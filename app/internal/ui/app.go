@@ -590,42 +590,10 @@ func (a *App) Start() {
 		a.osd.Bar(0, 0, 0, 0, 0, false)
 	}
 	if a.Plex != nil {
-		// the first home fetch takes seconds on a slow server: fetch in
-		// the background and keep the starting frame on screen meanwhile
-		// (the core goes black when frames stop for two seconds)
-		done := make(chan homeResult, 1)
-		client := a.Plex
-		go func() {
-			hubs, err := fetchHome(client)
-			done <- homeResult{hubs, err}
-		}()
-		a.Push(&starting{app: a})
-		for {
-			a.redraw()
-			select {
-			case r := <-done:
-				a.stack[len(a.stack)-1] = newHomeFrom(a, r)
-				a.dirty = true
-				return
-			default:
-				a.Out.WaitField(20 * time.Millisecond)
-			}
-		}
+		a.Push(NewHome(a))
+		return
 	}
 	a.Push(NewLogin(a))
-}
-
-// starting is the frame shown while home loads: the page background and
-// the mark where home will draw them, so home appears in place.
-type starting struct{ app *App }
-
-func (*starting) Key(input.Event, time.Time) {}
-func (s *starting) Draw(c *gfx.Canvas, _ time.Time) bool {
-	c.Fill(0, 0, c.W, c.H, gfx.Bg)
-	if s.app.Mark != nil {
-		s.app.Mark.PlaceFlat(c, SafeX+16, SafeY-8)
-	}
-	return false
 }
 
 // Connect switches to the server in the config (after sign-in) and

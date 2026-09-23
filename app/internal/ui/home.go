@@ -113,14 +113,6 @@ func (h *Home) reload() {
 	h.load(hubs, err)
 }
 
-// newHomeFrom builds the home screen from rows fetched elsewhere (at
-// startup, while the starting frame is on screen).
-func newHomeFrom(app *App, r homeResult) *Home {
-	h := &Home{app: app, home: true}
-	h.load(r.hubs, r.err)
-	return h
-}
-
 // load installs a fetch result and schedules the next background refresh.
 func (h *Home) load(hubs []*plex.Hub, err error) {
 	h.refreshAt = time.Now().Add(30 * time.Second)
