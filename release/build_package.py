@@ -30,7 +30,7 @@ def build(out, core_tree, ident, version='0.1.0-alpha.1'):
             hashes[name] = sha(src)
         manifest = {'id': ident, 'version': version, 'files': hashes}
         (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-        for name in ('manager.py', 'README.md', 'USING.md', 'DISPLAY.md', 'TROUBLESHOOTING.md', 'TERMS.md', 'THIRD_PARTY_NOTICES.md', 'BETA_ACCESS.md'):
+        for name in ('manager.py', 'README.md', 'TERMS.md', 'THIRD_PARTY_NOTICES.md', 'BETA_ACCESS.md'):
             shutil.copyfile(ROOT / 'release' / name, package / name)
         shutil.copytree(ROOT / 'release/licenses', package / 'licenses')
         script = stage / 'Scripts/MisterZine-Plex-Core-Install.sh'

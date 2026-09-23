@@ -1,6 +1,6 @@
 # Contributing
 
-Start with [troubleshooting and bug reports](release/TROUBLESHOOTING.md).
+Start with [help and bug reports](release/README.md).
 Maintainers can follow [beta release preparation](docs/BETA_RELEASES.md) and the
 [release hardware check](docs/HARDWARE_CHECK.md).
 
@@ -27,3 +27,5 @@ python3 tools/check_public_content.py
 Hardware-dependent changes also need a MiSTer smoke test. Test credentials and
 media must belong to the tester; playback can update watched state. Keep raw
 test journals and session notes in the private notes directory, outside Git.
+
+[Build from source](docs/BUILD.md) · [Architecture](docs/ARCHITECTURE.md) · [Detailed reference](docs/REFERENCE.md)

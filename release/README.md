@@ -1,64 +1,54 @@
-# Getting started
+# Help
 
-[Overview](https://github.com/matijaerceg/misterzine-plex-core) · [Using Plex](USING.md) · [Display setup](DISPLAY.md) · [Troubleshooting](TROUBLESHOOTING.md)
+[Downloads](https://github.com/matijaerceg/misterzine-plex-core/releases) · [Installation](https://github.com/matijaerceg/misterzine-plex-core#install)
 
-These instructions describe the first beta installer and member-code flow.
-Use the instructions included with your download if you have an older build.
-Downloads appear on the [GitHub releases page](https://github.com/matijaerceg/misterzine-plex-core/releases) when published.
+### How do I use it?
 
-## Before you start
+D-pad moves, OK selects, and Back returns or opens the menu. During playback,
+OK opens the controls; Back closes them. Press Back with the controls hidden to
+stop. To leave the app, use MiSTer's on-screen menu to return to the Menu core.
 
-You need a MiSTer FPGA, a controller or keyboard, a network connection, and a
-Plex account with access to a server capable of transcoding your chosen media.
-Use current MiSTer Linux with Python 3.9 or newer. Allow at least 250 MB free,
-plus space for cached artwork and retained releases. Check the release notes
-for the hardware and display combinations tested for that build.
+### Why is it asking for another code?
 
-**Beta playback requires a Patreon member code.** Anyone can install, link Plex
-and browse. Your Plex sign-in code and your beta member code are different:
-one links your Plex account; the other unlocks video playback in this beta.
-See [beta access](BETA_ACCESS.md) for details.
+The Plex sign-in code links your account. Early-access releases also need a
+six-digit code from that version's Patreon post to play videos. Enter it when
+you press Play, or under **Options > Beta access**. It's saved for next time.
+Public releases are free and need no playback code.
 
-For an RGB-only CRT profile, select **Safe 480i** in the core OSD before playback.
-Read [display setup](DISPLAY.md) for CRT and HDMI configuration. PAL is not yet
-supported. Playback and watched/unwatched controls update your real Plex account;
-start with a small test library.
+### Installation or sign-in isn't working
 
-## Install and sign in
+Check the network connection, SD card space and that MiSTer Linux is current
+(Python 3.9 or newer). Rerun the installer to repair files; settings are kept.
+For an expired Plex sign-in code, request a new one on the sign-in screen.
+For a missing server, try **Options > Choose server again**.
+Older builds may have different script names; follow their included instructions.
 
-1. Download `MisterZine-Plex-Install.sh` from the chosen
-   [GitHub release](https://github.com/matijaerceg/misterzine-plex-core/releases)
-   and copy it into the SD card's `Scripts` folder.
-2. Run **Scripts > MisterZine-Plex-Install** and confirm the offered release.
-   The installer locates MiSTer Downloader or downloads a verified official copy,
-   verifies the package and decoder, and opens Plex. Update All is optional.
-3. Enter the displayed Plex sign-in code at [plex.tv/link](https://plex.tv/link),
-   then choose your server on MiSTer.
-4. Select a movie or episode and press Play. Enter the six-digit member code
-   from that version's Patreon post to unlock beta playback.
+### Playback stutters
 
-Next time, launch **Scripts > MisterZine-Plex-Run**. Use the Scripts entry:
-loading an RBF directly does not start the application.
+Try 1.5 or 2 Mbps in Options, and check that your Plex server can transcode the
+video. The default is 3 Mbps; higher settings are experimental.
 
-The installer runs only the Plex database and preserves other Downloader
-settings. It does not change your MiSTer INI files or the separate MisterZine
-Arcade Frontend. Repeating installation repairs files without resetting settings.
-Public releases, when available, do not need a beta code; the installer offers
-public by default when published and explains paid access when offering a beta.
+### The picture looks wrong
 
-## Manual ZIP installation
+CRT output uses NTSC 480i. For RGB-only CRT profiles, choose **Safe 480i** in the
+core's on-screen menu. PAL isn't supported yet. Select HDMI 480p in Options;
+hold OK for two seconds to keep the change, or let it revert.
+For normal proportions, use **HDMI aspect > Original 4:3** in the core menu.
+Some HDMI scaling settings may leave borders.
 
-Extract the release ZIP onto the card root and run its
-`Scripts/MisterZine-Plex-Install.sh`. It installs the included package from
-`misterzine-plex-alpha` (a retained folder name, even for beta builds).
-The first decoder download still requires a connection.
+### How do I update or remove it?
 
-## Next steps
+Use **Options > Updates** to install a release, then choose **Restart now** when
+ready. Sign-in and settings are kept. If you need to go back, return to MiSTer
+Menu and run **MisterZine-Plex-Rollback**.
 
-- [Using Plex](USING.md): controls, settings, updates and removal.
-- [Display setup](DISPLAY.md): CRT profiles, HDMI and aspect ratio.
-- [Troubleshooting](TROUBLESHOOTING.md): installation, playback and bug reports.
+To remove it, return to MiSTer Menu and run **MisterZine-Plex-Uninstall**.
+It keeps your settings by default; removing all Plex data requires typing REMOVE.
 
-See [application terms](TERMS.md), [component notices](THIRD_PARTY_NOTICES.md)
-and the supplied `licenses` folder. Matching core and presenter sources are
-supplied in `corresponding-source.zip`.
+### Still stuck?
+
+[Report a problem](https://github.com/matijaerceg/misterzine-plex-core/issues/new?template=bug_report.yml)
+with the version from Options, your MiSTer model, display connection and what
+happened. If needed, **MisterZine-Plex-Diagnostics** writes a diagnostics file in
+`/media/fat/misterzine-plex/`. Run it from MiSTer Menu and review the file before
+sharing; it can contain media titles. Don't share account files, tokens or member codes.

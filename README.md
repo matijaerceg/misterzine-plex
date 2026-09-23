@@ -1,50 +1,33 @@
 # MisterZine Plex Core
 
-Browse and watch your Plex library on MiSTer FPGA, with an interface designed
-for CRTs and controlled from your gamepad. Supports search, playback controls,
-NTSC 480i and HDMI 480p.
+Watch your Plex library on MiSTer. Built for CRTs, with controller navigation
+and HDMI support. The app's source is available in this repository.
 
 ![MisterZine Plex Core library browsing screen](docs/images/plex-browsing.png)
 
-**First beta:** anyone can install, link Plex and browse. Video playback in
-official beta builds requires a six-digit Patreon member code for that release.
-[How beta access works](release/BETA_ACCESS.md).
+## Install
 
-## Get started
+Public releases are free and need no unlock code. The initial release and future
+prereleases offer paid early access through Patreon: anyone can browse, but
+playback requires the code from that version's Patreon post.
 
-You need a MiSTer, a controller or keyboard, a network connection and a Plex
-account with access to a server capable of transcoding your media. Use current
-MiSTer Linux with Python 3.9 or newer and allow at least 250 MB free, plus cache
-and retained releases. Check each release's notes for tested hardware.
+You'll need a networked MiSTer running current MiSTer Linux, at least 250 MB free
+on the SD card, and a Plex account with access to a server that can transcode.
 
 1. Download `MisterZine-Plex-Install.sh` from
-   [GitHub Releases](https://github.com/matijaerceg/misterzine-plex-core/releases)
-   when a build is available, and copy it into your SD card's `Scripts` folder.
-2. Run **Scripts > MisterZine-Plex-Install** and confirm the release.
-3. Link your account at [plex.tv/link](https://plex.tv/link), choose your server,
-   then enter the member code when you first press Play.
+   [Releases](https://github.com/matijaerceg/misterzine-plex-core/releases)
+   and put it in the SD card's `Scripts` folder.
+2. Run **Scripts > MisterZine-Plex-Install**.
+3. Follow the sign-in screen at [plex.tv/link](https://plex.tv/link),
+   choose your server, and pick something to watch.
 
-[Full setup instructions](release/README.md) cover display configuration and
-manual installation. Update All is optional. Launch again from
-**Scripts > MisterZine-Plex-Run**. Older builds may have different script names;
-follow the instructions included with your download.
+For an early-access build, enter the Patreon code when you first press Play.
+Next time, open **Scripts > MisterZine-Plex-Run**. Update All is optional.
 
-## Before you try it
+CRT output is NTSC 480i; PAL isn't supported yet. With an RGB-only CRT profile,
+select **Safe 480i** in the core's on-screen menu. HDMI supports 480p.
 
-This is beta software. Playback and watched/unwatched controls update your real
-Plex account; start with a small test library. PAL is not yet supported.
-RGB-only CRT profiles need **Safe 480i** in the core OSD. Higher experimental
-bitrates can stall, and some HDMI scaling settings may leave borders.
+[Need help?](release/README.md) · [Build and contribute](CONTRIBUTING.md)
 
-## Guides and help
-
-- [Using Plex](release/USING.md): controls, settings, updates, rollback and removal.
-- [Display setup](release/DISPLAY.md): CRT profiles, HDMI and aspect ratio.
-- [Troubleshooting and bug reports](release/TROUBLESHOOTING.md).
-- [Build from source](docs/BUILD.md), [architecture](docs/ARCHITECTURE.md)
-  and [contributing](CONTRIBUTING.md).
-
-[Application terms](release/TERMS.md) and
-[component licenses](release/THIRD_PARTY_NOTICES.md) apply separately; source
-visibility does not grant additional application rights. Movie artwork retains
-its owners' rights. Not affiliated with or endorsed by Plex or the MiSTer project.
+[Terms](release/TERMS.md) · [Component licenses](release/THIRD_PARTY_NOTICES.md).
+Movie artwork belongs to its owners. Not affiliated with Plex or the MiSTer project.
