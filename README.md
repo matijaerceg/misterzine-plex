@@ -20,6 +20,14 @@ You'll need a networked MiSTer running current MiSTer Linux, at least 250 MB fre
 For an early-access build, enter the Patreon code when you first press Play.
 Next time, open **MisterZine Plex Core** from the main menu.
 
+If the installer or an update reports a download failure, check whether
+**Update All** or **Downloader** works on the same MiSTer. If they fail too, the
+problem is the board's connection or clock, not this app: run Downloader once so
+the board syncs its time, or set the clock in MiSTer Menu, then try again. If
+Downloader works and this app still cannot download, the on-screen message
+says why; [report it](https://github.com/matijaerceg/misterzine-plex-core/issues/new?template=bug_report.yml)
+with that message.
+
 CRT output is NTSC 480i; PAL isn't supported yet. HDMI supports 480p rendering.
 
 This is unstable beta software. It talks to your real Plex account: playback,
