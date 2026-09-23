@@ -158,7 +158,7 @@ func (a *App) syncTheme() {
 			if s.item.Type == "episode" {
 				key = s.item.GrandKey
 			}
-		case *Chooser, *FullText:
+		case *Chooser, *FullText, *BetaAccess, *ForgetBetaAccess, *Updates:
 			continue
 		}
 		break

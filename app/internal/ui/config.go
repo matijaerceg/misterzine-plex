@@ -13,22 +13,24 @@ import (
 // Config is the app's settings and sign-in, kept as JSON on the SD card.
 // The tokens live only here and in memory; nothing logs them.
 type Config struct {
-	RecentSearches []string `json:"recent_searches,omitempty"`
-	NoTaps         bool     `json:"no_taps"`
-	NoTheme        bool     `json:"no_theme"`
-	Progressive    bool     `json:"progressive"` // confirmed HDMI 480p preference
-	FourThree      bool     `json:"only_4x3"`    // hide media wider than 4:3
-	NoAutoplay     bool     `json:"no_autoplay"` // do not run on to the next episode
-	Bitrate        int      `json:"bitrate"`     // transcode cap in kbit/s; 0 is the default
-	ClientID       string   `json:"client_id"`
-	Token          string   `json:"token"` // the plex.tv account token
-	AccountName    string   `json:"account_name,omitempty"`
-	ServerURL      string   `json:"server_url"`   // the chosen server
-	ServerToken    string   `json:"server_token"` // the token for that server
-	ServerName     string   `json:"server_name"`
-	LoadWarning    string   `json:"-"`
-	LoadError      error    `json:"-"`
-	path           string
+	EarlyAccessUpdates bool     `json:"early_access_updates"`
+	DismissedUpdates   []string `json:"dismissed_updates,omitempty"`
+	RecentSearches     []string `json:"recent_searches,omitempty"`
+	NoTaps             bool     `json:"no_taps"`
+	NoTheme            bool     `json:"no_theme"`
+	Progressive        bool     `json:"progressive"` // confirmed HDMI 480p preference
+	FourThree          bool     `json:"only_4x3"`    // hide media wider than 4:3
+	NoAutoplay         bool     `json:"no_autoplay"` // do not run on to the next episode
+	Bitrate            int      `json:"bitrate"`     // transcode cap in kbit/s; 0 is the default
+	ClientID           string   `json:"client_id"`
+	Token              string   `json:"token"` // the plex.tv account token
+	AccountName        string   `json:"account_name,omitempty"`
+	ServerURL          string   `json:"server_url"`   // the chosen server
+	ServerToken        string   `json:"server_token"` // the token for that server
+	ServerName         string   `json:"server_name"`
+	LoadWarning        string   `json:"-"`
+	LoadError          error    `json:"-"`
+	path               string
 }
 
 // LoadConfig reads the config file; a missing file gives the defaults. A

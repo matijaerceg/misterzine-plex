@@ -48,7 +48,12 @@ func main() {
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("MisterZine Plex Core %s (%s)\n", version, build)
-		if beta.Batch != "" || beta.KeySHA256 != "" {
+		channel := beta.Channel
+		if channel == "" {
+			channel = "development"
+		}
+		fmt.Printf("Release channel: %s\n", channel)
+		if beta.Batch != "" || beta.KeySHA256 != "" || beta.CodeSHA256 != "" {
 			fmt.Printf("Patreon beta batch: %s\n", beta.Batch)
 		}
 		return

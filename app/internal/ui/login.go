@@ -265,6 +265,9 @@ func (l *Login) Draw(c *gfx.Canvas, now time.Time) bool {
 		}
 	}
 	y = SafeBottom - 2*f.Body.Height() - 10
+	if !l.picker {
+		l.app.text(c, SafeX, SafeBottom-18, f.SmallBold, gfx.GreyLo, "Back: Options")
+	}
 	if errS != "" {
 		l.app.text(c, SafeX, y, f.Body, gfx.GreyHi, f.Body.Fit(errS, SafeW))
 		return false
@@ -301,6 +304,8 @@ func (l *Login) Back() bool {
 		l.gen++
 		l.mu.Unlock()
 		l.app.Pop()
+	} else {
+		l.app.Push(NewOptions(l.app))
 	}
 	return true
 }

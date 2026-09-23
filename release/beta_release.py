@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Create patron key ZIPs and explicitly build public or beta applications."""
+"""Create patron codes or legacy key ZIPs and explicitly build public or beta applications."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,8 @@ def create_key(batch, private=PRIVATE):
     private.mkdir(parents=True, exist_ok=True)
     path = private / (batch + '.key')
     archive = private / (batch + '-patron-key.zip')
+    if (private / (batch + '.code')).exists():
+        raise FileExistsError('This batch already has a code; choose a new batch')
     if archive.exists():
         raise FileExistsError('A patron ZIP already exists for this batch; restore its original key or choose a new batch')
     # Never replace a key: existing releases depend on its exact bytes.
@@ -41,8 +44,21 @@ def create_key(batch, private=PRIVATE):
     return archive
 
 
+def create_code(batch, private=PRIVATE):
+    batch_name(batch)
+    private.mkdir(parents=True, exist_ok=True)
+    path = private / (batch + '.code')
+    if any((private / (batch + suffix)).exists() for suffix in ('.key', '-patron-key.zip')):
+        raise FileExistsError('This batch already has a file key; choose a new batch')
+    with path.open('x', encoding='ascii') as out:
+        out.write(f'{secrets.randbelow(1000000):06d}')
+    return path
+
+
 def build(channel, batch, go, version, ident, private=PRIVATE):
-    flags = ['-s', '-w']
+    if channel not in ('beta', 'public'):
+        raise ValueError('Unknown release channel')
+    flags = ['-s', '-w', '-X', 'plexcrt/internal/beta.Channel=' + channel]
     # Metadata is passed inside Go's linker argument syntax. Reject whitespace
     # and quotes so it cannot introduce additional linker options.
     for value in (version, ident):
@@ -51,16 +67,38 @@ def build(channel, batch, go, version, ident, private=PRIVATE):
     flags += ['-X', 'main.version=' + version, '-X', 'main.build=' + ident]
     if channel == 'beta':
         batch_name(batch)
-        key = (private / (batch + '.key')).read_bytes()
-        if len(key) != 32:
-            raise ValueError('Beta key must be exactly 32 bytes')
+        code_path = private / (batch + '.code')
+        key_path = private / (batch + '.key')
+        if code_path.exists():
+            if key_path.exists():
+                raise ValueError('Ambiguous batch: both code and file key exist')
+            key = code_path.read_bytes()
+            if not re.fullmatch(rb'[0-9]{6}', key):
+                raise ValueError('Beta code must contain exactly six ASCII digits')
+            verifier = 'CodeSHA256'
+        else:
+            key = key_path.read_bytes()
+            if len(key) != 32:
+                raise ValueError('Beta key must be exactly 32 bytes')
+            verifier = 'KeySHA256'
         flags += ['-X', 'plexcrt/internal/beta.Batch=' + batch,
-                  '-X', 'plexcrt/internal/beta.KeySHA256=' + hashlib.sha256(key).hexdigest()]
+                  '-X', 'plexcrt/internal/beta.' + verifier + '=' + hashlib.sha256(key).hexdigest()]
     elif batch:
         raise ValueError('Public builds must not specify a beta batch')
     env = dict(os.environ, GOOS='linux', GOARCH='arm', GOARM='7', CGO_ENABLED='0')
     subprocess.run([go, 'build', '-trimpath', '-ldflags', ' '.join(flags),
                     '-o', 'dist/plexcrt', './cmd/plexcrt'], cwd=ROOT / 'app', env=env, check=True)
+    access = {'batch': batch, 'sha256': hashlib.sha256(key).hexdigest()} if channel == 'beta' else None
+    if channel == 'beta' and verifier != 'CodeSHA256':
+        access['legacy_file_key'] = True
+    write_build_metadata(channel, batch, version, ident, access)
+
+
+def write_build_metadata(channel, batch, version, ident, access):
+    binary = ROOT / 'app/dist/plexcrt'
+    metadata = {'id': ident, 'version': version, 'channel': channel, 'access': access,
+                'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+    (binary.parent / 'plexcrt.build.json').write_text(json.dumps(metadata, indent=2) + '\n')
 
 
 def main():
@@ -68,6 +106,8 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     key = commands.add_parser('create-key')
     key.add_argument('--batch', required=True)
+    code = commands.add_parser('create-code')
+    code.add_argument('--batch', required=True)
     app = commands.add_parser('build')
     app.add_argument('--channel', choices=['public', 'beta'], required=True)
     app.add_argument('--batch', default='')
@@ -77,6 +117,8 @@ def main():
     args = parser.parse_args()
     if args.command == 'create-key':
         print('Patron-only ZIP:', create_key(args.batch))
+    elif args.command == 'create-code':
+        print('Private code file:', create_code(args.batch))
     else:
         build(args.channel, args.batch, args.go, args.version, args.id)
         print('Built app/dist/plexcrt:', args.channel, args.batch)

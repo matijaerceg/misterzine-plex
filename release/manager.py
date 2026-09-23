@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import signal
 import struct
 import subprocess
@@ -27,7 +28,53 @@ FF_URL = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-armhf-static.ta
 FF_SHA = '7d41f558cb1f3395b313f8ceabed78b3731c79a0962abf405ebb5cd393e93991'
 PAYLOAD = {'plexcrt', 'plexplay.py', 'plexfb', 'MisterZine Plex Core.rbf'}
 LEGACY_PAYLOAD = (PAYLOAD - {'MisterZine Plex Core.rbf'}) | {'MisterZine Plex.rbf'}
-SCRIPTS = {'Run': 'run', 'Rollback': 'rollback', 'Remove': 'remove', 'Diagnostics': 'diagnostics'}
+SCRIPTS = {'Rollback': 'rollback', 'Diagnostics': 'diagnostics', 'Uninstall': 'uninstall'}
+HELPERS = ('manager.py', 'update_service.py', 'catalogue.py', 'menu_launcher.py')
+BOOT_START = '# BEGIN MISTERZINE PLEX LAUNCHER'
+BOOT_END = '# END MISTERZINE PLEX LAUNCHER'
+
+
+def menu_entries(card, enable=True):
+    root = card / 'misterzine-plex'
+    startup = card / 'linux/user-startup.sh'
+    if startup.is_symlink() or not startup.resolve().is_relative_to(card.resolve()):
+        raise ValueError('Startup file must stay on the selected card')
+    text = startup.read_text() if startup.exists() else '#!/bin/bash\n'
+    text = re.sub(re.escape(BOOT_START) + r'\n.*?' + re.escape(BOOT_END) + r'\n?', '', text, flags=re.S)
+    # Migrate the exact earlier development hook without touching other apps.
+    legacy = '[ -f /media/fat/misterzine-plex/menu_launcher.py ] && setsid python3 /media/fat/misterzine-plex/menu_launcher.py > /tmp/misterzine-plex-menu.log 2>&1 < /dev/null &'
+    text = '\n'.join(line for line in text.split('\n') if line not in (legacy, '# MisterZine Plex main-menu launcher'))
+    entry = card / 'MisterZine Plex Core.mgl'
+    if enable:
+        atomic(entry, b'<mistergamedescription>\n  <rbf>menu</rbf>\n  <setname>misterzine-plex</setname>\n</mistergamedescription>\n')
+        command = 'setsid python3 ' + shlex.quote(str(root / 'menu_launcher.py')) + ' --card ' + shlex.quote(str(card))
+        block = BOOT_START + '\n' + command + ' >/tmp/misterzine-plex-menu.log 2>&1 </dev/null &\n' + BOOT_END + '\n'
+        # Put the hook ahead of any existing early exit in user-startup.sh.
+        first, sep, rest = text.partition('\n')
+        text = first + '\n' + block + rest if first.startswith('#!') else '#!/bin/bash\n' + block + text
+    else:
+        entry.unlink(missing_ok=True)
+    if enable or startup.exists():
+        atomic(startup, text.encode())
+        startup.chmod(0o755)
+
+
+def start_menu_launcher(card):
+    if card.resolve() == Path('/media/fat') and Path('/dev/MiSTer_cmd').exists():
+        stop_menu_launcher(card)
+        with open('/tmp/misterzine-plex-menu.log', 'ab') as log:
+            subprocess.Popen([sys.executable, str(card / 'misterzine-plex/menu_launcher.py'), '--card', str(card)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+
+
+def stop_menu_launcher(card):
+    for proc in Path('/proc').glob('[0-9]*'):
+        try:
+            args = (proc / 'cmdline').read_bytes().split(b'\0')
+            if len(args) > 1 and args[1] == str(card / 'misterzine-plex/menu_launcher.py').encode():
+                os.kill(int(proc.name), signal.SIGTERM)
+        except (FileNotFoundError, ProcessLookupError):
+            pass
 
 
 def digest(path):
@@ -60,7 +107,7 @@ def read_state(root):
     state = json.loads((root / 'active.json').read_text())
     for key in ('current', 'previous'):
         value = state.get(key)
-        if value is not None and not re.fullmatch(r'[A-Za-z0-9_.-]+', value):
+        if value is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', value):
             raise ValueError('Invalid release selection; run the installer again')
     return state
 
@@ -107,21 +154,26 @@ def decoder(root, archive=None):
 
 def wrappers(card):
     for label, action in SCRIPTS.items():
-        path = card / 'Scripts' / ('MisterZine-Plex-Core-' + label + '.sh')
-        body = '#!/bin/bash\npython3 /media/fat/misterzine-plex/manager.py ' + action + '\n'
+        path = card / 'Scripts' / ('MisterZine-Plex-' + label + '.sh')
+        helper = 'update_service.py' if label in ('Install', 'Uninstall') else 'manager.py'
+        body = '#!/bin/bash\npython3 ' + shlex.quote(str(card / 'misterzine-plex' / helper)) + ' ' + action + ' --card ' + shlex.quote(str(card)) + '\n'
         body += 'result=$?\nif [ "$result" -ne 0 ]; then read -r -p "Press Enter to return to MiSTer..."; fi\nexit "$result"\n'
         atomic(path, body.encode())
         path.chmod(0o755)
+    for label in ('Run', 'Rollback', 'Remove', 'Diagnostics', 'Install'):
+        (card / 'Scripts' / ('MisterZine-Plex-Core-' + label + '.sh')).unlink(missing_ok=True)
+    for label in ('Run', 'Install'):
+        (card / 'Scripts' / ('MisterZine-Plex-' + label + '.sh')).unlink(missing_ok=True)
 
 
-def install(card, package, archive=None):
+def stage(card, package, archive=None):
     root = card / 'misterzine-plex'
     manifest = json.loads((package / 'manifest.json').read_text())
     files = manifest['files']
     if set(files) != PAYLOAD:
         raise ValueError('Unexpected package file list')
     ident = manifest['id']
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+', ident):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', ident):
         raise ValueError('Invalid release identifier')
     for name, expected in files.items():
         if digest(package / 'payload' / name) != expected:
@@ -130,18 +182,35 @@ def install(card, package, archive=None):
     decoder(root, archive)
     dest = root / 'releases' / ident
     dest.mkdir(parents=True, exist_ok=True)
+    if dest.is_symlink():
+        raise ValueError('Unsafe release directory')
+    if (dest / 'manifest.json').exists() and json.loads((dest / 'manifest.json').read_text()) != manifest:
+        raise ValueError('Release identifier already contains different files')
     for name, expected in files.items():
         target = dest / name
-        if target.exists() and digest(target) != expected:
-            raise ValueError('Release identifier already contains different files')
-        if not target.exists():
+        if target.is_symlink():
+            raise ValueError('Unsafe release payload')
+        if not target.exists() or digest(target) != expected:
             atomic(target, (package / 'payload' / name).read_bytes())
         target.chmod(0o755 if name != 'MisterZine Plex Core.rbf' else 0o644)
     write_json(dest / 'manifest.json', manifest)
+    for name in HELPERS:
+        if (package / name).is_file():
+            atomic(dest / 'maintenance' / name, (package / name).read_bytes())
+    return manifest
+
+
+def install(card, package, archive=None):
+    root = card / 'misterzine-plex'
+    manifest = stage(card, package, archive)
+    ident = manifest['id']
     # Activate only after every executable and dependency has been verified.
     state = read_state(root) if (root / 'active.json').exists() else {}
     previous = state.get('previous') if state.get('current') == ident else state.get('current')
-    atomic(root / 'manager.py', Path(__file__).read_bytes())
+    atomic(root / 'manager.py', (package / 'manager.py').read_bytes() if (package / 'manager.py').exists() else Path(__file__).read_bytes())
+    for name in HELPERS[1:]:
+        if (package / name).is_file():
+            atomic(root / name, (package / name).read_bytes())
     for name in ('README.md', 'TERMS.md', 'THIRD_PARTY_NOTICES.md', 'BETA_ACCESS.md', 'corresponding-source.zip'):
         if (package / name).is_file():
             atomic(root / name, (package / name).read_bytes())
@@ -149,8 +218,25 @@ def install(card, package, archive=None):
         if (package / 'licenses' / name).is_file():
             atomic(root / 'licenses' / name, (package / 'licenses' / name).read_bytes())
     wrappers(card)
+    if (root / 'menu_launcher.py').is_file():
+        updates = root / 'updates'
+        if updates.is_symlink():
+            raise ValueError('Update support directory cannot be a symbolic link')
+        updates.mkdir(exist_ok=True)
+        menu_entries(card)
     write_json(root / 'active.json', {'current': ident, 'previous': previous})
-    print('Installed ' + ident + '. Launch Scripts > MisterZine-Plex-Core-Run.')
+    configure_channel(root, manifest)
+    start_menu_launcher(card)
+    print('Installed ' + ident + '. Launch MisterZine Plex Core from the main menu.')
+
+
+def configure_channel(root, manifest):
+    channel = manifest.get('channel')
+    if channel in ('public', 'beta'):
+        from catalogue import CATALOGUE_URL
+        url = CATALOGUE_URL.rsplit('/', 1)[0] + '/' + channel + '.json.zip'
+        atomic(root.parent / 'downloader_misterzine_plex.ini',
+               ('[misterzine_plex]\ndb_url = ' + url + '\nfilter =\n').encode())
 
 
 def rollback(root):
@@ -164,14 +250,20 @@ def rollback(root):
     for name, expected in manifest['files'].items():
         if digest(previous / name) != expected:
             raise ValueError('Previous release checksum failed')
+    for name in HELPERS:
+        if (previous / 'maintenance' / name).is_file():
+            atomic(root / name, (previous / 'maintenance' / name).read_bytes())
     write_json(root / 'active.json', {'current': state['previous'], 'previous': state['current']})
+    configure_channel(root, manifest)
     print('Previous release selected. Account and settings preserved.')
 
 
 def remove(card):
     # Disable the launch entries; retain everything needed to recover an install.
+    stop_menu_launcher(card)
+    menu_entries(card, enable=False)
     for label in SCRIPTS:
-        path = card / 'Scripts' / ('MisterZine-Plex-Core-' + label + '.sh')
+        path = card / 'Scripts' / ('MisterZine-Plex-' + label + '.sh')
         if path.exists():
             os.replace(str(path), str(path) + '.disabled')
     print('Launch entries disabled. Settings, cache and releases remain in /media/fat/misterzine-plex.')
@@ -254,7 +346,10 @@ def core_launch_entry(root, folder):
     if not core.exists():
         core = folder / 'MisterZine Plex.rbf'
     entry = root.parent / '.misterzine-plex-core.mgl'
-    relative = core.relative_to(root.parent).with_suffix('').as_posix()
+    # MGL core paths are relative to MiSTer's storage root, not the MGL file.
+    # Also support an isolated installation nested under that mount for testing.
+    storage = Path('/media') / root.parts[2] if len(root.parts) > 3 and root.parts[1] == 'media' else root.parent
+    relative = core.relative_to(storage).with_suffix('').as_posix()
     body = '<mistergamedescription>\n  <rbf>' + escape(relative) + '</rbf>\n</mistergamedescription>\n'
     atomic(entry, body.encode())
     return entry
@@ -274,7 +369,49 @@ def prepare_framebuffer(parameters=Path('/sys/module/MiSTer_fb/parameters')):
         mode.write_text('8888 1 1920 1080 7680\n')
 
 
+def selected_core(core, proc_root=Path('/proc')):
+    for proc in proc_root.iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if (proc / 'comm').read_text().strip() != 'MiSTer':
+                continue
+            args = (proc / 'cmdline').read_bytes().split(b'\0')
+            if len(args) > 1 and args[1] == str(core).encode():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def recover_activation(root):
+    journal = root / 'updates/activation.json'
+    if not journal.exists() or os.environ.get('MISTERZINE_PLEX_READY_FILE'):
+        return False
+    recovery = root / 'updates/recovery'
+    record = json.loads(journal.read_text())
+    if not set(record['helpers']) <= set(HELPERS):
+        raise ValueError('Invalid recovery information; use the external rollback entry')
+    previous = json.loads((recovery / 'selection.json').read_text())
+    for name in record['helpers']:
+        atomic(root / name, (recovery / name).read_bytes())
+    if previous is None:
+        (root / 'active.json').unlink(missing_ok=True)
+    else:
+        write_json(root / 'active.json', previous)
+    registration = (recovery / 'registration').read_bytes()
+    dropin = root.parent / 'downloader_misterzine_plex.ini'
+    if registration:
+        atomic(dropin, registration)
+    else:
+        dropin.unlink(missing_ok=True)
+    journal.unlink()
+    print('Interrupted activation recovered. Previous selection restored.')
+    return True
+
+
 def run(root):
+    recover_activation(root)
     state = read_state(root)
     folder = root / 'releases' / state['current']
     args = [str(folder / 'plexcrt'), '-config', str(root / 'plexcrt.json'),
@@ -284,6 +421,14 @@ def run(root):
     with open('/dev/MiSTer_cmd', 'w') as cmd:
         cmd.write('load_core ' + str(entry) + '\n')
     time.sleep(2)
+    core = folder / 'MisterZine Plex Core.rbf'
+    if not core.exists():
+        core = folder / 'MisterZine Plex.rbf'
+    deadline = time.monotonic() + 8
+    while not selected_core(core):
+        if time.monotonic() > deadline:
+            raise RuntimeError('MiSTer did not load the selected RBF. Reinstall the matching package.')
+        time.sleep(.1)
     # Keep a read-only watch on the core. Returning to Menu stops this app too.
     with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 4096, access=mmap.ACCESS_READ) as mem:
         last = struct.unpack_from('<I', mem, 0x40)[0]

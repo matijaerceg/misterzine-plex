@@ -13,3 +13,16 @@ jobs:
       - run: python tools/check_public_content.py
       - run: python -m unittest discover -s tools -p 'test*.py'
       - run: python -m unittest discover -s release -p 'test*.py'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache: false
+      - run: go test ./...
+        working-directory: app
+      - run: go vet ./... && go build ./cmd/plexcrt
+        working-directory: app
+        env:
+          GOOS: linux
+          GOARCH: arm
+          GOARM: '7'
+          CGO_ENABLED: '0'

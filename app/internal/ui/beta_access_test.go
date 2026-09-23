@@ -23,11 +23,11 @@ func TestLockedPlayerDoesNotLaunchOrTouchLog(t *testing.T) {
 	}
 }
 
-func TestLockedPlayShowsInstructionsBeforePlayback(t *testing.T) {
+func TestLockedPlayShowsLockBeforePlayback(t *testing.T) {
 	a := &App{Player: &Player{Access: func() error { return beta.ErrLocked }}}
 	a.PlayAt(&plex.Item{RatingKey: "123"}, 0)
 	if _, ok := a.top().(*BetaAccess); !ok {
-		t.Fatal("missing beta instructions")
+		t.Fatal("missing beta lock")
 	}
 	if !a.Starting.IsZero() {
 		t.Fatal("locked playback started spinner")

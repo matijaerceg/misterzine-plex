@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"plexcrt/internal/beta"
 	"plexcrt/internal/gfx"
 )
 
@@ -41,6 +42,7 @@ type startupSplash struct {
 
 // Blend in ordinary RAM, then publish without reading the frame ring.
 func (a *App) drawScreen(c *gfx.Canvas, now time.Time) bool {
+	defer a.drawBetaBrand(c)
 	s := &a.splash
 	if !s.enabled {
 		return a.top().Draw(c, now)
@@ -62,6 +64,10 @@ func (a *App) drawScreen(c *gfx.Canvas, now time.Time) bool {
 	a.top().Draw(s.page, now)
 	alpha := int(256 * (startupFade - elapsed) / startupFade)
 	s.page.BlitOverT((c.W-s.logo.W)/2, (c.H-s.logo.H)/2, s.logo, alpha)
+	if beta.IsBeta() {
+		label := a.Version
+		a.text(s.page, (c.W-a.F.SmallBold.Width(label))/2, SafeBottom-24, a.F.SmallBold, gfx.Amber, label)
+	}
 	c.Blit(0, 0, &gfx.Image{W: c.W, H: c.H, Pix: s.page.Pix})
 	return true
 }

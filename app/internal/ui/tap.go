@@ -29,6 +29,8 @@ func (a *App) focusPosition() focusPosition {
 		}
 	case *Wall:
 		f.a, f.b, f.p = s.cur, s.view, s.tabs
+	case *Updates:
+		f.a = s.cur
 	case *Options:
 		f.a = s.cur
 	case *Drawer:
