@@ -263,6 +263,7 @@ type Overlay struct {
 	row    []byte
 	// what each buffer holds, so a Show writes only the rows that changed
 	held [2][]byte
+	raw  [2][]byte // the pixels each buffer was last given, before the alpha merge
 	geom [2][4]int
 	x, y int
 	w, h int
@@ -358,8 +359,17 @@ func (o *Overlay) Show(x, y int, c *gfx.Canvas, alpha []byte) {
 		o.geom[o.buf] = [4]int{x, y, w, h}
 	}
 	held := o.held[o.buf]
+	if len(o.raw[o.buf]) < w*h*4 {
+		o.raw[o.buf] = make([]byte, max(w*h*4, osdSize/2))
+	}
+	raw := o.raw[o.buf]
 	for yy := 0; yy < h; yy++ {
 		src := c.Pix[yy*c.W*4 : yy*c.W*4+w*4]
+		rawRow := raw[yy*w*4 : (yy+1)*w*4]
+		if same && bytes.Equal(src, rawRow) {
+			continue // the same pixels as last time: nothing to merge or write
+		}
+		copy(rawRow, src)
 		row := o.row[:w*4]
 		copy(row, src)
 		if alpha != nil {

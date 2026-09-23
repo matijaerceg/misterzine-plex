@@ -4,6 +4,8 @@
 package input
 
 import (
+	"runtime"
+	"syscall"
 	"time"
 )
 
@@ -50,6 +52,7 @@ const (
 	repeatDelay    = 400 * time.Millisecond
 	repeatRate     = 140 * time.Millisecond // keep equal to ui.RepeatDur
 	pollPeriod     = 16 * time.Millisecond  // the core posts the pad once a field: read it that often
+	heldPollPeriod = 4 * time.Millisecond   // while a button is down: the release must land the ms it happens
 	backspaceDelay = 250 * time.Millisecond
 	backspaceRate  = 45 * time.Millisecond
 )
@@ -66,6 +69,10 @@ var ps2map = map[int]Key{
 func Poll(src Source, stop <-chan struct{}) <-chan Event {
 	out := make(chan Event, 64)
 	go func() {
+		// its own thread, a little above the decoder: a release must not
+		// wait for a timeslice while the core runs the scrub dot on
+		runtime.LockOSThread()
+		syscall.Setpriority(syscall.PRIO_PROCESS, 0, -5)
 		var prevJoy uint32
 		var prevKey uint32 = src.Key()
 		keyboard := newKeyboard()
@@ -75,6 +82,7 @@ func Poll(src Source, stop <-chan struct{}) <-chan Event {
 		reps := 0
 		t := time.NewTicker(pollPeriod)
 		defer t.Stop()
+		period := pollPeriod
 		for {
 			var now time.Time
 			select {
@@ -85,6 +93,14 @@ func Poll(src Source, stop <-chan struct{}) <-chan Event {
 			}
 			j := src.Joy()
 			cur := (j | j>>16) & 0xFF // either pad; d-pad, OK, Back, L, R
+			want := pollPeriod
+			if cur != 0 {
+				want = heldPollPeriod
+			}
+			if want != period {
+				t.Reset(want)
+				period = want
+			}
 			pressed := cur &^ ((prevJoy | prevJoy>>16) & 0xFF)
 			released := ((prevJoy | prevJoy>>16) & 0xFF) &^ cur
 			prevJoy = j

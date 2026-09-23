@@ -20,27 +20,36 @@ import (
 // open a list in the overlay; a skip button appears over an intro or
 // credits marker; at the end a countdown runs on to the next episode.
 type Playing struct {
-	app     *App
-	item    *plex.Item
-	queue   []*plex.Item // the episodes around it, for Prev and Next
-	idx     int
-	send    func(string)
-	visible bool
-	shownAt time.Time
-	peekAt  time.Time     // a closed-overlay seek: the bar and times peek until OsdFlash
-	peekH   int           // the peek's height, from the last compose
-	peekFor time.Duration // how long the peek stays after peekAt; 0 means OsdFlash
-	focus   int
-	paused  bool
-	pos     float64
-	dur     float64
-	statAt  time.Time // when the launcher's status was last read
-	seekAt  time.Time // a seek was sent: the position jumps once the stream restarts
-	seekTo  float64
-	canvas  *gfx.Canvas
-	alpha   []byte
-	dirty   bool
-	last    string // what the overlay last showed, to skip identical redraws
+	app       *App
+	item      *plex.Item
+	queue     []*plex.Item // the episodes around it, for Prev and Next
+	idx       int
+	send      func(string)
+	visible   bool
+	shownAt   time.Time
+	peekAt    time.Time     // a closed-overlay seek: the bar and times peek until OsdFlash
+	peekH     int           // the peek's height, from the last compose
+	peekFor   time.Duration // how long the peek stays after peekAt; 0 means OsdFlash
+	peekDir   int           // the direction of the press that opened a strip scrub
+	armed     bool          // a strip gesture ended: the seek goes after SeekGrace unless more comes
+	armAt     time.Time     // when the last release happened
+	peekScrub bool          // the strip is in its scrub layout: the hold has passed the tap threshold
+	static    *gfx.Canvas   // the panel without the running time, for a cheap repaint each field
+	staticFor string        // what static shows
+	alphaDone bool          // the alpha plane is drawn once: it never changes
+	timeY     int           // where the running time goes on the static panel
+	scrubTick int           // fields into a run: the time is repainted every other one
+	focus     int
+	paused    bool
+	pos       float64
+	dur       float64
+	statAt    time.Time // when the launcher's status was last read
+	seekAt    time.Time // a seek was sent: the position jumps once the stream restarts
+	seekTo    float64
+	canvas    *gfx.Canvas
+	alpha     []byte
+	dirty     bool
+	last      string // what the overlay last showed, to skip identical redraws
 	// the sprites the core draws: set by compose, sent by Tick
 	dotX, dotY int
 	dotOn      bool
@@ -209,6 +218,10 @@ func (p *Playing) show(now time.Time) {
 // run; a shorter press is one ten-second step.
 const ScrubHold = 220 * time.Millisecond
 
+// SeekGrace is how long the strip waits after a release for another tap
+// or hold before it sends the one seek for the whole gesture.
+const SeekGrace = 400 * time.Millisecond
+
 // running reports whether a held direction has passed the tap threshold:
 // the core is then moving the dot on its own, field-locked.
 func (p *Playing) running(now time.Time) bool {
@@ -290,6 +303,26 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 				p.settle = true // the core has the dot: adopt its place next field
 			}
 			p.held = 0
+			if p.scrub && !p.visible {
+				// the controls hidden: a tap steps the dot ten seconds, a hold
+				// ran it along the strip; the seek waits SeekGrace for more
+				if p.settle && p.app.osd != nil {
+					p.scrubTo = p.fromX(p.app.osd.DotX())
+				} else if !p.settle {
+					p.scrubTo = max(0, min(p.scrubTo+float64(10*p.peekDir), p.dur-6))
+				}
+				p.peekScrub = true // the dot and its time stay up through the grace
+				p.armed, p.armAt = true, now
+				p.peekAt, p.peekFor = now, 0
+				p.dirty = true
+			} else if p.scrub {
+				// the panel's scrubber: the same grace, no OK needed
+				if p.settle && p.app.osd != nil {
+					p.scrubTo = p.fromX(p.app.osd.DotX())
+				}
+				p.armed, p.armAt = true, now
+				p.shownAt = now
+			}
 		}
 		return false
 	}
@@ -331,6 +364,7 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			if ev.Key == input.Left {
 				d = -1
 			}
+			p.armed = false // the gesture goes on
 			p.scrubTo = max(0, min(p.scrubTo+float64(10*d), p.dur-6))
 			p.held, p.heldAt = d, now
 		case input.Enter:
@@ -338,11 +372,13 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 				if (p.running(now) || p.settle) && p.app.osd != nil {
 					p.scrubTo = p.fromX(p.app.osd.DotX())
 				}
+				p.armed = false
 				p.seekTo_(p.scrubTo)
 			}
 		case input.Down, input.Back:
 			if !ev.Repeat {
 				p.scrub = false
+				p.armed = false
 			}
 		case input.Up:
 		}
@@ -421,8 +457,16 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			}
 			p.shownAt = now
 			p.dirty = true
-		} else {
-			p.seekBy(float64(10 * d))
+		} else if !ev.Repeat {
+			// the strip scrubs like the panel: a hold runs the dot from Tick,
+			// a tap steps it; the seek goes once nothing has been pressed
+			// for SeekGrace, so taps and holds add up into one seek
+			if !p.scrub {
+				p.scrubTo = p.pos // a fresh gesture starts from the picture
+			}
+			p.scrub = true
+			p.armed = false
+			p.held, p.heldAt, p.peekDir = d, now, d
 			p.peekAt, p.peekFor = now, 0
 			p.dirty = true
 		}
@@ -432,6 +476,7 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 		}
 		if p.peeking(now) {
 			p.peekAt = time.Time{}
+			p.scrub, p.held, p.armed = false, 0, false
 			p.dirty = true
 			return false
 		}
@@ -460,6 +505,27 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	}
 	if field && p.scrub && p.held != 0 {
 		p.shownAt = now // a hold keeps the overlay up
+		if !p.visible {
+			p.peekAt = now // and the strip
+		}
+	}
+	if p.scrub && !p.visible && p.running(now) {
+		p.peekScrub = true // a hold, not a tap: the strip takes the scrub layout
+	} else if !p.scrub {
+		p.peekScrub = false
+	}
+	if p.armed && p.held == 0 {
+		p.peekAt = now // the strip stays through the grace
+		if now.Sub(p.armAt) >= SeekGrace {
+			// nothing pressed since the release: the gesture is over
+			p.armed = false
+			if !p.visible {
+				p.scrub = false // the strip returns to its plain layout
+			}
+			p.seekTo_(p.scrubTo)
+			p.peekAt, p.peekFor = now, 0
+			p.dirty = true
+		}
 	}
 	// the dot's run is the core's: send the speed, follow its place
 	vx := 0
@@ -528,16 +594,30 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 			by >= SafeY && by+OsdListRowH <= SafeY+OsdListH)
 		return
 	}
+	if field {
+		p.scrubTick++
+	}
 	if peek {
-		// the title, the bar and the times, along the bottom edge: no cursor
-		osd.Dot(0, 0, 0, false)
+		// the title, the bar and the times, along the bottom edge; the dot
+		// on the bar while a hold scrubs
 		osd.Bar(0, 0, 0, 0, 0, false)
-		key = "peek|" + itoa(int(p.pos))
-		if key != p.last {
+		key = "peek|" + itoa(int(p.pos)) + "|" + itoa(btoi(p.peekScrub)) + "|" + itoa(int(p.scrubTo))
+		if key != p.last && !(vx != 0 && p.scrubTick&1 == 1) {
 			p.last = key
 			p.compose(true)
 			h := p.peekH
 			p.painter.show(osd, 0, 480-h, &gfx.Canvas{W: 720, H: h, Pix: p.canvas.Pix[:720*h*4]}, p.alpha[:720*h])
+		}
+		if p.scrub && p.dur > 0 {
+			// the dot: loaded at the press (hidden, so the run starts from
+			// here), shown once the hold runs; the core places it meanwhile
+			if vx == 0 || !p.dotOn {
+				p.dotOn = p.peekScrub
+				osd.Dot(SafeX+int(float64(SafeW)*p.scrubTo/p.dur+0.5), 480-p.peekH+p.pillY+PillH/2, uint32(gfx.White), p.dotOn)
+			}
+		} else {
+			p.dotOn = false
+			osd.Dot(0, 0, 0, false)
 		}
 		p.dirty = false
 		return
@@ -565,7 +645,10 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	}
 	key = p.panelKey()
 	if key == p.last && p.composed {
-		return // nothing to repaint: composing every field cost a third of a core
+		return // nothing to repaint
+	}
+	if vx != 0 && p.scrubTick&1 == 1 && p.composed {
+		return // a run: the time is repainted every other field
 	}
 	p.compose(false)
 	if !p.composed {
@@ -640,19 +723,50 @@ func (p *Playing) peeking(now time.Time) bool {
 // times, and peekH is set to the rows they take.
 func (p *Playing) compose(peek bool) {
 	c := &gfx.Canvas{W: 720, H: OsdH, Pix: p.canvas.Pix[:720*OsdH*4]}
+	if !p.alphaDone {
+		// alpha: the panel, its top edge eased in; the same for every panel
+		for y := 0; y < c.H; y++ {
+			a := OsdAlpha
+			if y < 20 {
+				a = OsdAlpha * y / 20
+			}
+			row := p.alpha[y*c.W : (y+1)*c.W]
+			for x := range row {
+				row[x] = byte(a)
+			}
+		}
+		p.alphaDone = true
+	}
+	// everything but the running time is drawn once per state into the
+	// static panel; a scrub then repaints the time over a copy each field
+	// instead of composing the whole panel (which held the loop to 15 Hz)
+	timed := p.scrub && (!peek || p.peekScrub)
+	key := p.staticKey(peek, timed)
+	if p.static == nil {
+		p.static = gfx.NewCanvas(720, OsdH)
+	}
+	if key != p.staticFor {
+		p.composeStatic(p.static, peek, timed)
+		p.staticFor = key
+	}
+	copy(c.Pix, p.static.Pix)
+	if timed {
+		c.TextCenter(SafeX+SafeW/2, p.timeY, p.app.F.Body, gfx.White, clock(int(p.scrubTo)))
+	}
+}
+
+// staticKey describes the static panel, without the running time.
+func (p *Playing) staticKey(peek, timed bool) string {
+	it := p.item
+	return it.Title + it.GrandTitle + "|" + itoa(int(p.pos)) + "|" + itoa(p.focus) + "|" + itoa(btoi(p.paused)) +
+		"|" + itoa(btoi(p.scrub)) + "|" + itoa(btoi(peek)) + "|" + itoa(btoi(timed))
+}
+
+// composeStatic paints the panel into c: the title, the pill, the times
+// (or, with timed, room for the running time at timeY) and the buttons.
+func (p *Playing) composeStatic(c *gfx.Canvas, peek, timed bool) {
 	f := p.app.F
 	c.Fill(0, 0, c.W, c.H, gfx.Bg)
-	// alpha: the panel, its top edge eased in
-	for y := 0; y < c.H; y++ {
-		a := OsdAlpha
-		if y < 20 {
-			a = OsdAlpha * y / 20
-		}
-		row := p.alpha[y*c.W : (y+1)*c.W]
-		for x := range row {
-			row[x] = byte(a)
-		}
-	}
 	it := p.item
 	title := it.Title
 	sub := ""
@@ -682,11 +796,10 @@ func (p *Playing) compose(peek bool) {
 		c.Fill(SafeX, y+6, int(float64(pw)*p.pos/p.dur), PillH, gfx.Amber)
 	}
 	y += PillH + 14
-	if p.scrub {
-		// the time the dot stands for: fixed in the middle, in the body
-		// face, so it reads steadily while the dot runs. Changes every
-		// field: drawn now, not through the cache.
-		c.TextCenter(SafeX+SafeW/2, y-3, f.Body, gfx.White, clock(int(p.scrubTo)))
+	if timed {
+		// the time the dot stands for goes in the middle, in the body
+		// face, so it reads steadily while the dot runs: compose draws it
+		p.timeY = y - 3
 	} else {
 		c.Text(MenuX, y, f.SmallBold, gfx.GreyLo, clock(int(p.pos))+" / "+clock(int(p.dur)))
 		if p.dur > 0 {

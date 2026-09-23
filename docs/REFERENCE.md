@@ -14,9 +14,12 @@ Detailed behavior and display settings. For everyday help, see the
 - During playback, OK opens the controls. Left/right selects an action; OK
   activates it. Up opens the scrubber. Back closes the controls; Back with the
   controls hidden stops playback. Audio/subtitle menus use the same controls.
-  With the controls hidden, left/right jumps ten seconds and shows the
-  progress bar and times for two seconds. The last frame stays on screen
-  until the new position starts playing.
+  In the scrubber, taps step the dot ten seconds and a hold runs it; the
+  seek goes on its own 400 ms after the last release (OK sends it at once).
+  With the controls hidden, left/right shows a strip with the title, the
+  progress bar and the times, and works the same way: taps and holds add
+  up into one seek. The last frame stays on screen until the new position
+  starts playing.
 - Options contains video mode, theme music, navigation taps, autoplay, bitrate,
   the 4:3 filter, server selection and sign-out. The 4:3 filter applies to the
   home rows, search and every library view. Movies and episodes are judged by
