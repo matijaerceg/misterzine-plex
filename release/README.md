@@ -49,6 +49,13 @@ Use **Options > Updates** to install a release, then choose **Restart now** when
 ready. Sign-in and settings are kept. If you need to go back, return to MiSTer
 Menu and run **MisterZine-Plex-Rollback**.
 
+Downloads go through MiSTer Downloader, and fall back to a direct fetch of the
+release file when that fails. If both fail, the message under **Options > Updates**
+says whether your MiSTer's connection, its clock, or the release is the problem.
+A board whose clock is far off cannot verify any secure site, so set the time in
+MiSTer Menu or let it sync over the network. The full reasons are kept in
+`/media/fat/misterzine-plex/updates/last-error.log` and in the diagnostics file.
+
 To remove it, return to MiSTer Menu and run **MisterZine-Plex-Uninstall**.
 It keeps your settings by default; removing all Plex data requires typing REMOVE.
 

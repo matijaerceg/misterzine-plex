@@ -291,9 +291,15 @@ def diagnostics(root):
             secrets += [cfg.get(k, '') for k in ('token', 'server_token', 'server_url', 'server_name', 'client_id')]
         except (OSError, ValueError):
             pass
-    report = {'release': read_state(root), 'kernel': os.uname().release, 'logs': {}}
+    try:
+        state = read_state(root)
+    except (OSError, ValueError):
+        # An installation that never completed still deserves a report.
+        state = None
+    report = {'release': state, 'kernel': os.uname().release, 'logs': {}}
     logs = {name: Path('/tmp') / name for name in ('misterzine-plex.log', 'plexplay.log')}
-    logs['last-error.log'] = root / 'updates/last-error.log'
+    for name in ('last-error.log', 'download-output.log', 'downloader.log'):
+        logs[name] = root / 'updates' / name
     for name, path in logs.items():
         if path.is_file():
             with path.open('rb') as src:

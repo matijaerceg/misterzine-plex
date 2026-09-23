@@ -231,6 +231,125 @@ class UpdateTests(unittest.TestCase):
 
         self.assertLessEqual(len('--cacert /etc/ssl/certs/cacert.pem'), service.CURL_SSL_MAX)
 
+    def opener(self, data):
+        class Response(io.BytesIO):
+            def geturl(self):
+                return 'https://objects.example.org/redirected/package.zip'
+        return lambda url, timeout: Response(data)
+
+    def failing_runner(self, output):
+        def run(command, **kw):
+            kw['stdout'].write(output)
+            return subprocess.CompletedProcess(command, 1)
+        return run
+
+    def test_failed_downloader_run_falls_back_to_a_direct_fetch(self):
+        r, z, _ = self.release()
+        (self.card / 'Scripts').mkdir(); (self.card / 'Scripts/downloader.sh').touch()
+        (self.root / 'updates').mkdir()
+        output = b'curl: (60) SSL certificate problem: certificate is not yet valid\nhttps://secret.example.org/x\n'
+        downloader = lambda card, root, release: service.download(
+            card, root, release, self.failing_runner(output), lambda *a: service.fetch_release(*a, opener=self.opener(z.read_bytes())))
+        service.prepare(self.card, r, downloader)
+        staged = self.card / catalogue.STAGING / 'package.zip'
+        self.assertEqual(manager.digest(staged), r['sha256'])
+        self.assertFalse((self.root / 'updates/package.part').exists())
+        status = json.loads((self.root / 'updates/status.json').read_text())
+        self.assertEqual(status['stage'], 'ready')
+        log = (self.root / 'updates/download-output.log').read_text()
+        self.assertIn('Downloader could not verify the server certificate (exit 1). The release was then fetched directly.', log)
+
+    def test_both_download_paths_failing_name_fixed_reasons_only(self):
+        r, _, _ = self.release()
+        (self.card / 'Scripts').mkdir(); (self.card / 'Scripts/downloader.sh').touch()
+        (self.root / 'updates').mkdir()
+        output = b'downloader.ini: CURL_SSL value too long https://secret.example.org/cert\n'
+        def refused(url, timeout):
+            raise service.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        # GitHub answers, so the screen blames the release; the log keeps both reasons.
+        with self.assertRaises(RuntimeError):
+            service.prepare(self.card, r, lambda card, root, release: service.download(
+                card, root, release, self.failing_runner(output), lambda *a: service.fetch_release(*a, opener=refused), lambda: None))
+        status = json.loads((self.root / 'updates/status.json').read_text())
+        self.assertIn('Download failed: GitHub is reachable, so the release itself is at fault. Please report this.', status['message'])
+        self.assertNotIn('Downloader', status['message'])
+        log = (self.root / service.ERROR_LOG).read_text()
+        self.assertIn('[Downloader rejected its certificate option (exit 1); '
+                      'direct download was refused the release file (HTTP 404)]', log)
+        self.assertNotIn('example.org', status['message'] + log)
+        # A missing Downloader that cannot be bootstrapped is reported the same
+        # way, and with no DNS the screen blames the connection.
+        (self.card / 'Scripts/downloader.sh').unlink()
+        def offline(url, timeout):
+            raise service.urllib.error.URLError(service.socket.gaierror(-2, 'Name or service not known'))
+        with patch.object(service.urllib.request, 'urlopen', offline), self.assertRaises(RuntimeError) as caught:
+            service.download(self.card, self.root, r, self.failing_runner(b''), lambda *a: service.fetch_release(*a, opener=offline))
+        self.assertEqual(str(caught.exception), 'Download failed: your MiSTer cannot look up GitHub. Check its network connection and DNS.')
+        self.assertEqual(caught.exception.detail, 'Downloader setup could not resolve the download host; '
+                         'direct download could not resolve the download host')
+
+    def test_verdict_separates_the_board_from_the_release(self):
+        e = service.urllib.error
+        def probe(exc):
+            def opener(request, timeout):
+                self.assertEqual(request.get_method(), 'HEAD')
+                raise exc
+            return opener
+        self.assertIn('cannot look up GitHub', service.verdict(probe(e.URLError(service.socket.gaierror(-2, 'x')))))
+        self.assertIn('cannot verify GitHub certificates', service.verdict(probe(e.URLError('[SSL: CERTIFICATE_VERIFY_FAILED]'))))
+        self.assertIn('cannot reach GitHub', service.verdict(probe(e.URLError(service.socket.timeout()))))
+        self.assertIn('cannot reach GitHub', service.verdict(probe(ConnectionResetError())))
+        self.assertIsNone(service.verdict(probe(e.HTTPError('https://github.com/', 403, 'Forbidden', {}, None))))
+        self.assertIsNone(service.verdict(self.opener(b'')))
+        # A clock from before this code existed explains certificate failures without a probe.
+        self.assertIn('clock reads 2016', service.verdict(lambda *a: self.fail('no probe'), now=lambda: 1461000000))
+
+    def test_direct_fetch_verifies_size_and_digest_and_leaves_no_partial_file(self):
+        r, z, _ = self.release()
+        (self.root / 'updates').mkdir()
+        for data in (z.read_bytes() + b'x', z.read_bytes()[:-1], b'y' * r['size']):
+            with self.assertRaises(ValueError) as caught:
+                service.fetch_release(self.card, self.root, r, self.opener(data))
+            self.assertIn('release file', str(caught.exception))
+        self.assertFalse((self.card / catalogue.STAGING / 'package.zip').exists())
+        self.assertFalse((self.root / 'updates/package.part').exists())
+        def plain_http(url, timeout):
+            class Response(io.BytesIO):
+                def geturl(self):
+                    return 'http://example.org/package.zip'
+            return Response(z.read_bytes())
+        with self.assertRaises(ValueError):
+            service.fetch_release(self.card, self.root, r, plain_http)
+        service.fetch_release(self.card, self.root, r, self.opener(z.read_bytes()))
+        self.assertEqual(manager.digest(self.card / catalogue.STAGING / 'package.zip'), r['sha256'])
+
+    def test_failure_reasons_are_fixed_words(self):
+        log = self.root / 'output.log'
+        for text, expected in ((b'Could not resolve host: raw.githubusercontent.com', 'could not resolve the download host (exit 1)'),
+                               (b'OSError: [Errno 28] No space left on device', 'found no free space (exit 1)'),
+                               (b'Traceback (most recent call last):', 'crashed (exit 1)'),
+                               (b'Bad status code 503', 'got a server error (exit 1)'),
+                               (b'something else entirely', 'exit 1, see updates/download-output.log')):
+            log.write_bytes(text)
+            self.assertEqual(service.downloader_reason(log, 1), expected)
+        self.assertEqual(service.downloader_reason(self.root / 'missing.log', 2), 'exit 2')
+        e = service.urllib.error
+        self.assertEqual(service.network_reason(e.URLError(service.socket.timeout('timed out'))), 'timed out')
+        self.assertEqual(service.network_reason(e.URLError(ConnectionRefusedError())), 'could not connect')
+        self.assertEqual(service.network_reason(e.URLError(OSError(101, 'Network is unreachable'))), 'failed with network is unreachable')
+        self.assertEqual(service.network_reason(e.URLError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed')), 'could not verify the server certificate')
+        self.assertEqual(service.network_reason(ValueError('Downloader archive verification failed')), 'Downloader archive verification failed')
+
+    def test_diagnostics_include_download_logs_without_addresses(self):
+        (self.root / 'updates').mkdir()
+        (self.root / 'updates/download-output.log').write_text('first\ncurl: (6) Could not resolve host https://raw.example.org/db.json.zip\n')
+        (self.root / 'updates/downloader.log').write_text('first\nDownloader 2.0 https://example.org/x\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager.diagnostics(self.root)
+        report = json.loads((self.root / 'diagnostics.json').read_text())
+        self.assertIn('Could not resolve host [server address removed]', report['logs']['download-output.log'])
+        self.assertIn('Downloader 2.0 [server address removed]', report['logs']['downloader.log'])
+
     def test_publishing_database_owns_only_staging_and_installer_is_standalone(self):
         r, z, _ = self.release()
         out = self.fixture / 'dist'

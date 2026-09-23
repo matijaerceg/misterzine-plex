@@ -14,13 +14,16 @@ import lzma
 import os
 import platform
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -145,22 +148,164 @@ def certificate_env(card, system=Path('/etc/ssl/certs/cacert.pem')):
     return {}
 
 
-def download(card, root, release, runner=subprocess.run):
+# Fixed descriptions of failures recognised in Downloader's output. Only these
+# words reach the screen and the status file; Downloader's own output does not.
+DOWNLOADER_CAUSES = (
+    (r'CURL_SSL', 'rejected its certificate option'),
+    (r'could not resolve host|name or service not known|temporary failure in name resolution|gaierror', 'could not resolve the download host'),
+    (r'certificate|ssl|tls', 'could not verify the server certificate'),
+    (r'no space left', 'found no free space'),
+    (r'read-only file system', 'found the card read-only'),
+    (r'timed out|timeout', 'timed out'),
+    (r'connection refused|network is unreachable|no route to host', 'could not connect'),
+    (r'\b40[34]\b', 'was refused the release file'),
+    (r'\b5\d\d\b|bad gateway|service unavailable', 'got a server error'),
+    (r'hash|mismatch', 'saw the release file change'),
+    (r'traceback', 'crashed'),
+)
+
+
+def downloader_reason(log, returncode):
+    """A short, fixed description of a failed Downloader run: its exit code and
+    the first recognised problem in its output log."""
+    detail = 'exit ' + str(returncode)
+    try:
+        text = log.read_text(errors='replace')[-64 * 1024:]
+    except OSError:
+        return detail
+    for pattern, cause in DOWNLOADER_CAUSES:
+        if re.search(pattern, text, re.IGNORECASE):
+            return cause + ' (' + detail + ')'
+    return detail + ', see updates/download-output.log'
+
+
+def network_reason(exc):
+    """A short, fixed description of a failed direct fetch. Server addresses,
+    headers and bodies stay out of it."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return 'was refused the release file (HTTP ' + str(exc.code) + ')'
+    if isinstance(exc, (ValueError, RuntimeError)):
+        return str(exc)
+    cause = getattr(exc, 'reason', exc)
+    if isinstance(cause, socket.gaierror):
+        return 'could not resolve the download host'
+    if 'CERTIFICATE' in str(cause).upper() or type(cause).__name__.startswith('SSL'):
+        return 'could not verify the server certificate'
+    if isinstance(cause, (socket.timeout, TimeoutError)) or 'timed out' in str(cause):
+        return 'timed out'
+    if isinstance(cause, (ConnectionRefusedError, ConnectionResetError)):
+        return 'could not connect'
+    if isinstance(cause, OSError) and cause.errno is not None:
+        return 'failed with ' + os.strerror(cause.errno).lower()
+    return 'failed with ' + type(cause).__name__
+
+
+class DownloadError(RuntimeError):
+    """A download failure whose message is for the person at the screen and
+    whose detail, in the same fixed vocabulary, is for the error log."""
+    def __init__(self, message, detail):
+        super().__init__(message)
+        self.detail = detail
+
+
+PROBE_URL = 'https://github.com/'
+# This code did not exist before 2026, so an earlier clock is wrong, and a
+# wrong clock makes every certificate check fail.
+CLOCK_FLOOR = 1767225600
+
+
+def verdict(opener=None, now=time.time):
+    """Why every download path failed, for the person at the screen: their
+    board's clock or connection, or, when GitHub itself answers, the release.
+    None means GitHub was reached, so the release side is at fault."""
+    opener = opener or urllib.request.urlopen
+    if now() < CLOCK_FLOOR:
+        year = time.strftime('%Y', time.gmtime(now()))
+        return 'your MiSTer clock reads ' + year + ', so it cannot verify secure sites. Set the time in MiSTer Menu'
+    try:
+        with opener(urllib.request.Request(PROBE_URL, method='HEAD'), timeout=20) as response:
+            response.read(1)
+    except urllib.error.HTTPError:
+        return None
+    except (OSError, urllib.error.URLError) as exc:
+        cause = network_reason(exc)
+        if 'resolve' in cause:
+            return 'your MiSTer cannot look up GitHub. Check its network connection and DNS'
+        if 'certificate' in cause:
+            return 'your MiSTer cannot verify GitHub certificates. Check its clock and network'
+        return 'your MiSTer cannot reach GitHub. Check its network connection'
+    return None
+
+
+def fetch_release(card, root, release, opener=None):
+    """Stage the release archive directly from its published URL, with the
+    same size and digest checks the package gets before installation. The
+    file lands in Downloader's staging folder with the content Downloader
+    would have written, so a later Downloader run leaves it alone."""
+    opener = opener or urllib.request.urlopen
+    releases.https(release['url'])
+    staging = guarded(card, releases.STAGING)
+    staging.mkdir(exist_ok=True)
+    part = guarded(root, 'updates/package.part')
+    digest, size = hashlib.sha256(), 0
+    try:
+        with opener(release['url'], timeout=60) as response, part.open('wb') as out:
+            releases.https(response.geturl())
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > release['size']:
+                    raise ValueError('found the release file larger than published')
+                digest.update(chunk)
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+        if size != release['size'] or digest.hexdigest() != release['sha256']:
+            raise ValueError('found the release file changed or incomplete')
+        os.replace(part, staging / 'package.zip')
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def download(card, root, release, runner=subprocess.run, fetch=fetch_release, probe=verdict):
     if other_downloader():
         raise RuntimeError('Another Downloader or Update All run is active. Try again when it finishes.')
-    command = engine(card)
-    ini = root / 'updates/downloader.ini'
-    manager.atomic(ini, ('[MiSTer]\nupdate_linux=false\nallow_reboot=0\nstorage_priority=off\n' + database_text(release)).encode())
-    env = dict(os.environ, DOWNLOADER_INI_PATH=str(ini), DOWNLOADER_LAUNCHER_PATH=str(card / 'Scripts/downloader.sh'),
-               FORCED_BASE_PATH=str(card), DEFAULT_BASE_PATH=str(card), UPDATE_LINUX='false', ALLOW_REBOOT='0',
-               EXTRA_DROP_IN_DATABASE_FILES='', FAIL_ON_FILE_ERROR='true', PYTHONUTF8='1',
-               LOGFILE=str(root / 'updates/downloader.log'))
-    env.update(certificate_env(card))
-    # Output belongs in an explicit device diagnostic log, never in the UI or request file.
-    with (root / 'updates/download-output.log').open('wb') as log:
-        result = runner(command + ['--run-only', releases.DB_ID], env=env, stdout=log, stderr=log, timeout=1800)
-    if result.returncode:
-        raise RuntimeError('Download failed. Check network and free space, then retry.')
+    problems = []
+    log = root / 'updates/download-output.log'
+    try:
+        command = engine(card)
+        ini = root / 'updates/downloader.ini'
+        manager.atomic(ini, ('[MiSTer]\nupdate_linux=false\nallow_reboot=0\nstorage_priority=off\n' + database_text(release)).encode())
+        env = dict(os.environ, DOWNLOADER_INI_PATH=str(ini), DOWNLOADER_LAUNCHER_PATH=str(card / 'Scripts/downloader.sh'),
+                   FORCED_BASE_PATH=str(card), DEFAULT_BASE_PATH=str(card), UPDATE_LINUX='false', ALLOW_REBOOT='0',
+                   EXTRA_DROP_IN_DATABASE_FILES='', FAIL_ON_FILE_ERROR='true', PYTHONUTF8='1',
+                   LOGFILE=str(root / 'updates/downloader.log'))
+        env.update(certificate_env(card))
+        # Output belongs in an explicit device diagnostic log, never in the UI or request file.
+        with log.open('wb') as out:
+            result = runner(command + ['--run-only', releases.DB_ID], env=env, stdout=out, stderr=out, timeout=1800)
+        if not result.returncode:
+            return
+        problems.append('Downloader ' + downloader_reason(log, result.returncode))
+    except subprocess.TimeoutExpired:
+        problems.append('Downloader timed out')
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+        problems.append('Downloader setup ' + network_reason(exc))
+    # Downloader could not stage the release. Fetch it directly so one broken
+    # Downloader setup does not block every update, and record both outcomes.
+    status(root, 'download', release, 'Downloading release directly...')
+    try:
+        fetch(card, root, release)
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+        problems.append('direct download ' + network_reason(exc))
+        # Both paths failed. Say whose problem it is: the board's clock or
+        # connection, or the release when GitHub itself answers.
+        why = probe() or 'GitHub is reachable, so the release itself is at fault. Please report this'
+        raise DownloadError('Download failed: ' + why + '.', '; '.join(problems))
+    with log.open('ab') as out:
+        out.write(('\n' + '; '.join(problems) + '. The release was then fetched directly.\n').encode())
 
 
 def unpack(archive, destination, release):
@@ -207,10 +352,11 @@ def failed(root, release, summary, exc):
     """Record why an update step failed: the status the app shows carries a
     short reason, and the error log keeps the last few for diagnostics."""
     why = reason(exc)
+    detail = getattr(exc, 'detail', '')
     log = root / ERROR_LOG
     try:
         lines = log.read_text(errors='replace').splitlines()[-19:] if log.is_file() else []
-        lines.append(time.strftime('%Y-%m-%d %H:%M:%S ') + summary + ': ' + why)
+        lines.append(time.strftime('%Y-%m-%d %H:%M:%S ') + summary + ': ' + why + (' [' + detail + ']' if detail else ''))
         manager.atomic(log, ('\n'.join(lines) + '\n').encode())
     except OSError:
         pass
@@ -471,6 +617,8 @@ def cli():
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
         # Do not echo URLs, credentials, or arbitrary child output.
         print(str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Operation failed. Check network, free space and the installed package.', file=sys.stderr)
+        if getattr(exc, 'detail', ''):
+            print('Details: ' + exc.detail, file=sys.stderr)
         sys.exit(1)
 
 
