@@ -20,16 +20,18 @@ func (a *App) drawBetaBrand(c *gfx.Canvas) {
 	a.betaBadge(c, x, y)
 }
 
-// The badge is drawn at 62 x 24 with the 16 px medium face, then shrunk to
-// 60% so it reads as a mark rather than a label.
-const betaBadgeW, betaBadgeH = 37, 14
+// The badge is drawn at 72 x 28 with the 18 px bold face, then shrunk to
+// 41 x 16 so it reads as a mark rather than a label.
+const betaBadgeW, betaBadgeH = 41, 16
 
 func (a *App) betaBadge(c *gfx.Canvas, x, y int) {
 	if a.betaMark == nil {
-		badge := gfx.NewCanvas(62, 24)
-		badge.Fill(0, 0, 62, 24, gfx.Amber)
-		badge.Text(8, 3, a.F.SmallBold, gfx.Bg, "BETA")
-		full := &gfx.Image{W: 62, H: 24, Pix: badge.Pix}
+		const w, h = 72, 28
+		f := gfx.Load("bold18")
+		badge := gfx.NewCanvas(w, h)
+		badge.Fill(0, 0, w, h, gfx.Amber)
+		badge.TextCenter(w/2, (h-f.Height())/2+1, f, gfx.Bg, "BETA")
+		full := &gfx.Image{W: w, H: h, Pix: badge.Pix}
 		a.betaMark = full.Shrink(betaBadgeW, betaBadgeH)
 	}
 	c.Blit(x, y, a.betaMark)
