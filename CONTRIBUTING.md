@@ -1,5 +1,9 @@
 # Contributing
 
+Start with [troubleshooting and bug reports](release/TROUBLESHOOTING.md).
+Maintainers can follow [beta release preparation](docs/BETA_RELEASES.md) and the
+[release hardware check](docs/HARDWARE_CHECK.md).
+
 Report bugs with the app version, MiSTer hardware, output cable/profile, local or
 remote server, and reproduction steps. Review diagnostics before sharing them;
 never attach account files, patron keys or unreviewed card images.
