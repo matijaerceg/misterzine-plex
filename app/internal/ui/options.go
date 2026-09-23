@@ -3,6 +3,7 @@ package ui
 import (
 	"time"
 
+	"plexcrt/internal/beta"
 	"plexcrt/internal/gfx"
 	"plexcrt/internal/input"
 	"plexcrt/internal/plex"
@@ -66,6 +67,28 @@ func (o *Options) items() []option {
 		label = "Sign out (" + cfg.AccountName + ")"
 	}
 	items = append(items, option{label: label, do: o.app.SignOut})
+	if beta.IsBeta() {
+		items = append(items, option{label: "Beta access", val: func() string {
+			switch beta.Check(o.app.betaDir()) {
+			case nil:
+				return "Unlocked"
+			case beta.ErrLocked:
+				return "Locked"
+			default:
+				return "Build error"
+			}
+		}, do: func() {
+			o.app.chooseBetaAccess()
+		}})
+	}
+	updateLabel := "Updates"
+	if o.app.updateAvailable() {
+		updateLabel = "Updates - update available"
+	}
+	if o.app.updates.status.Stage == "ready" {
+		updateLabel = "Updates - ready to restart"
+	}
+	items = append(items, option{label: updateLabel, do: func() { o.app.Push(NewUpdates(o.app)) }})
 	items = append(items, option{label: "Version", val: func() string {
 		if o.app.Version == "" {
 			return "development"
@@ -185,7 +208,11 @@ func (o *Options) Draw(c *gfx.Canvas, now time.Time) bool {
 	f := o.app.F
 	o.app.text(c, MenuX, SafeY, f.Title, gfx.Grey, "Options")
 	y := ListY0
-	for i, it := range o.items() {
+	items := o.items()
+	const visibleRows = 9
+	first := max(0, o.cur-visibleRows+1)
+	for i := first; i < min(len(items), first+visibleRows); i++ {
+		it := items[i]
 		col := gfx.GreyHi
 		if i == o.cur {
 			col = gfx.White
@@ -212,7 +239,8 @@ func (o *Options) Draw(c *gfx.Canvas, now time.Time) bool {
 		y += MenuRowH
 	}
 	if o.app.Build != "" {
-		o.app.text(c, MenuX, y+9, f.Small, gfx.GreyLo, f.Small.Fit("Build: "+o.app.Build, MenuWidth))
+		o.app.text(c, MenuX, SafeBottom-48, f.Small, gfx.GreyLo, f.Small.Fit("Build: "+o.app.Build, MenuWidth))
 	}
+	o.app.text(c, MenuX, SafeBottom-24, f.SmallBold, gfx.Purple, patreonAddress)
 	return false
 }

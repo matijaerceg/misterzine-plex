@@ -1,4 +1,4 @@
-"""Build an allowlisted alpha ZIP; never copy developer state or history."""
+"""Build an allowlisted release ZIP; never copy developer state or history."""
 import argparse
 import hashlib
 import json
@@ -28,14 +28,20 @@ def build(out, core_tree, ident, version='0.1.0-alpha.1'):
         for name, src in inputs.items():
             shutil.copyfile(src, payload / name)
             hashes[name] = sha(src)
-        manifest = {'id': ident, 'version': version, 'files': hashes}
+        manifest = {'id': ident, 'version': version, 'channel': 'development', 'access': None, 'files': hashes}
+        metadata = ROOT / 'app/dist/plexcrt.build.json'
+        if metadata.exists():
+            info = json.loads(metadata.read_text())
+            if info['id'] != ident or info['version'] != version or info['binary_sha256'] != hashes['plexcrt']:
+                raise ValueError('Application metadata does not match this package; rebuild with the selected ID and version')
+            manifest.update(channel=info['channel'], access=info['access'])
         (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-        for name in ('manager.py', 'README.md', 'TERMS.md', 'THIRD_PARTY_NOTICES.md', 'BETA_ACCESS.md'):
+        for name in ('manager.py', 'update_service.py', 'catalogue.py', 'menu_launcher.py', 'README.md', 'TERMS.md', 'THIRD_PARTY_NOTICES.md', 'BETA_ACCESS.md'):
             shutil.copyfile(ROOT / 'release' / name, package / name)
         shutil.copytree(ROOT / 'release/licenses', package / 'licenses')
-        script = stage / 'Scripts/MisterZine-Plex-Core-Install.sh'
+        script = stage / 'Scripts/MisterZine-Plex-Install.sh'
         script.parent.mkdir()
-        script.write_text('#!/bin/bash\npython3 /media/fat/misterzine-plex-alpha/manager.py install\nresult=$?\nread -r -p "Press Enter to return to MiSTer..."\nexit "$result"\n', newline='\n')
+        script.write_text('#!/bin/bash\nset -e\npython3 /media/fat/misterzine-plex-alpha/manager.py install\npython3 /media/fat/misterzine-plex/manager.py run\n', newline='\n')
         source = package / 'corresponding-source.zip'
         with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED) as archive:
             # Complete source directories, without Quartus build products/history.
@@ -60,6 +66,7 @@ def build(out, core_tree, ident, version='0.1.0-alpha.1'):
         print(str(zip_path))
         print('SHA-256: ' + sha(zip_path))
         print('Payloads: ' + ', '.join(sorted(hashes)))
+        return zip_path
 
 
 if __name__ == '__main__':

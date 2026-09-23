@@ -1,6 +1,6 @@
 # Release hardware check
 
-On each unit: install and launch from Scripts; link and select a server; browse;
+On each unit: install from Scripts and launch from the main menu; link and select a server; browse;
 play, pause, seek and stop one item; check theme/taps; leave to MiSTer Menu and
 relaunch. Confirm the active CRT profile stays at 480i. On HDMI, test the 480p
 hold-to-confirm and timeout-to-revert once. Check normal startup has no test card.

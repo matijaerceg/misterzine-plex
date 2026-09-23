@@ -33,8 +33,8 @@ video. The default is 3 Mbps; higher settings are experimental.
 CRT output uses NTSC 480i. For RGB-only CRT profiles, choose **Safe 480i** in the
 core's on-screen menu. PAL isn't supported yet. Select HDMI 480p in Options;
 hold OK for two seconds to keep the change, or let it revert.
-For normal proportions, use **HDMI aspect > Original 4:3** in the core menu.
-Some HDMI scaling settings may leave borders.
+For HDMI, leave **Scale** on **Normal**. If the picture is cropped or too small,
+see [HDMI setup](https://github.com/matijaerceg/misterzine-plex-core/blob/main/docs/HDMI.md).
 
 ### How do I update or remove it?
 

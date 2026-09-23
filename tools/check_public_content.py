@@ -18,7 +18,7 @@ def issues(name, data):
     errors = []
     if INTERNAL.fullmatch(p.name):
         errors.append('internal working document')
-    if p.suffix == '.key' or p.name.startswith(('plexcrt.json', '.plextoken', '.env')) and p.name != '.env.example' or any(x in p.parts for x in ('private-beta', '.claude', '__pycache__', 'node_modules')):
+    if p.suffix in ('.key', '.code', '.receipt') or p.name.startswith(('plexcrt.json', '.plextoken', '.env')) and p.name != '.env.example' or any(x in p.parts for x in ('private-beta', '.claude', '__pycache__', 'node_modules')):
         errors.append('private state or generated directory')
     if b'\x00' not in data:
         if PERSONAL.search(data): errors.append('personal machine path or device address')

@@ -70,7 +70,7 @@ func TestSignOutLabelUsesAccount(t *testing.T) {
 	} {
 		o := &Options{app: &App{Cfg: &Config{Token: tc.token, AccountName: tc.name, ServerName: "Movie Server"}}}
 		items := o.items()
-		if got := items[len(items)-2].label; got != tc.want {
+		if got := items[len(items)-3].label; got != tc.want {
 			t.Fatalf("got %q, want %q", got, tc.want)
 		}
 	}

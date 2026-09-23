@@ -35,15 +35,20 @@ class InstallerTests(unittest.TestCase):
         key = self.root / 'beta-keys/2026-09.key'
         key.parent.mkdir()
         key.write_bytes(b'patron-test-key')
+        receipt = self.root / 'beta-unlocks/fixture.receipt'
+        receipt.parent.mkdir()
+        receipt.write_text('unlocked\n')
         self.package_version('alpha-2')
         manager.install(self.card, self.package)
         self.assertEqual(manager.read_state(self.root), {'current': 'alpha-2', 'previous': 'alpha-1'})
         manager.rollback(self.root)
         self.assertEqual(manager.read_state(self.root)['current'], 'alpha-1')
         manager.remove(self.card)
-        self.assertTrue((self.card / 'Scripts/MisterZine-Plex-Core-Run.sh.disabled').is_file())
+        self.assertTrue((self.card / 'Scripts/MisterZine-Plex-Rollback.sh.disabled').is_file())
+        self.assertFalse((self.card / 'Scripts/MisterZine-Plex-Run.sh').exists())
         self.assertEqual(account.read_text(), '{"token":"TEST-ONLY-secret"}')
         self.assertEqual(key.read_bytes(), b'patron-test-key')
+        self.assertEqual(receipt.read_text(), 'unlocked\n')
 
     @mock.patch.object(manager, 'decoder')
     def test_rollback_to_local_pre_rename_release(self, decoder):

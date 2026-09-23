@@ -48,17 +48,29 @@ assign BUTTONS   = 0;
 
 //////////////////////////////////////////////////////////////////
 
-// Square-pixel HDMI inspection preserves the 720x480 raster at 3:2.
-// This only changes scaler aspect; analog scan timing is unchanged.
-assign VIDEO_ARX = status[7] ? 12'd3 : 12'd4;
-assign VIDEO_ARY = status[7] ? 12'd2 : 12'd3;
+// Scale the complete 720x480 frame, including when native output is interlaced.
+// Only HDMI aspect/size metadata changes; VGA timing and DE remain untouched.
+// Legacy status[7] (square-pixel diagnostics) is deliberately ignored.
+video_scale_int hdmi_scale
+(
+	.CLK_VIDEO(CLK_VIDEO),
+	.HDMI_WIDTH(HDMI_WIDTH), .HDMI_HEIGHT(HDMI_HEIGHT),
+	.SCALE({2'b00, status[8]}),
+	.hsize(12'd720), .vsize(12'd480),
+	.arx_i(12'd4), .ary_i(12'd3),
+	.arx_o(VIDEO_ARX), .ary_o(VIDEO_ARY)
+);
 
 `include "build_id.v"
 localparam CONF_STR = {
 	"MisterZine Plex Core;;",
 	"-;",
 	"O[6],Video output,App settings,Safe 480i;",
-	"O[7],HDMI aspect,Original 4:3,Square pixels;",
+	"-;",
+	"-,HDMI aspect: Original 4:3;",
+	"O[8],Scale,Normal,V-Integer;",
+	"-,HDMI resolution: active INI;",
+	"-,Full height: vscale_mode=0;",
 	"-;",
 	// button order fixes joystick_0 bits 4..11 for the ARM menu (plexmenu.py)
 	"J1,OK,Back,L,R;",

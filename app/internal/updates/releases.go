@@ -1,0 +1,227 @@
+// Package updates describes published releases, independently of installation.
+package updates
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"plexcrt/internal/beta"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const CatalogueURL = "https://raw.githubusercontent.com/matijaerceg/misterzine-plex-core/distribution/catalogue.json"
+
+type Access struct {
+	Batch  string `json:"batch"`
+	SHA256 string `json:"sha256"`
+}
+type Release struct {
+	ID      string  `json:"id"`
+	Version string  `json:"version"`
+	Channel string  `json:"channel"`
+	Notes   string  `json:"notes"`
+	URL     string  `json:"url"`
+	DBURL   string  `json:"db_url"`
+	Size    int64   `json:"size"`
+	SHA256  string  `json:"sha256"`
+	Access  *Access `json:"access"`
+}
+type Catalogue struct {
+	Schema   int                `json:"schema"`
+	Releases map[string]Release `json:"releases"`
+}
+
+var ident = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$`)
+var hash = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var semver = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
+
+func validURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Fragment == "" && len(s) <= 2048 && !strings.ContainsAny(s, " \r\n\t")
+}
+func (r Release) Requirement() beta.Requirement {
+	req := beta.Requirement{Channel: r.Channel}
+	if r.Access != nil {
+		req.Batch = r.Access.Batch
+		req.CodeSHA256 = r.Access.SHA256
+	}
+	return req
+}
+func (r Release) Validate() error {
+	if !ident.MatchString(r.ID) || !semver.MatchString(r.Version) || !hash.MatchString(r.SHA256) || !validURL(r.URL) || !validURL(r.DBURL) || r.Size <= 0 || r.Size > 256<<20 || len(r.Notes) > 16000 {
+		return fmt.Errorf("invalid release metadata")
+	}
+	if r.Channel != "public" && r.Channel != "beta" {
+		return fmt.Errorf("invalid channel")
+	}
+	if r.Channel == "public" && (r.Access != nil || strings.Contains(r.Version, "-")) {
+		return fmt.Errorf("invalid public release")
+	}
+	return r.Requirement().Validate()
+}
+func Parse(data []byte) (Catalogue, error) {
+	var c Catalogue
+	if len(data) > 128<<10 {
+		return c, fmt.Errorf("catalogue too large")
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		return c, err
+	}
+	if c.Schema != 1 || c.Releases == nil || len(c.Releases) > 2 {
+		return c, fmt.Errorf("unsupported catalogue")
+	}
+	ids := map[string]bool{}
+	for ch, r := range c.Releases {
+		if ch != r.Channel || ids[r.ID] {
+			return c, fmt.Errorf("conflicting release")
+		}
+		if err := r.Validate(); err != nil {
+			return c, err
+		}
+		ids[r.ID] = true
+	}
+	return c, nil
+}
+func Fetch(ctx context.Context, client *http.Client, address string) (Catalogue, error) {
+	if !validURL(address) {
+		return Catalogue{}, fmt.Errorf("invalid catalogue URL")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", address, nil)
+	if err != nil {
+		return Catalogue{}, err
+	}
+	req.Header.Set("User-Agent", "MisterZine-Plex")
+	resp, err := client.Do(req)
+	if err != nil {
+		return Catalogue{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !validURL(resp.Request.URL.String()) {
+		return Catalogue{}, fmt.Errorf("catalogue unavailable")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 128<<10+1))
+	if err != nil {
+		return Catalogue{}, err
+	}
+	return Parse(data)
+}
+
+func Cached(root string) (Catalogue, error) {
+	data, err := os.ReadFile(filepath.Join(root, "updates/catalogue.json"))
+	if err != nil {
+		return Catalogue{}, err
+	}
+	return Parse(data)
+}
+func SaveCache(root string, c Catalogue) error {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	if _, err = Parse(data); err != nil {
+		return err
+	}
+	dir := filepath.Join(root, "updates")
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".catalogue-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), filepath.Join(dir, "catalogue.json"))
+}
+
+// Compare implements release precedence, including numeric beta components.
+// The boolean is false for local build labels that are not release versions.
+func Compare(a, b string) (int, bool) {
+	aa, bb := semver.FindStringSubmatch(a), semver.FindStringSubmatch(b)
+	if aa == nil || bb == nil {
+		return 0, false
+	}
+	for i := 1; i <= 3; i++ {
+		x, e := strconv.ParseUint(aa[i], 10, 64)
+		y, f := strconv.ParseUint(bb[i], 10, 64)
+		if e != nil || f != nil {
+			return 0, false
+		}
+		if x < y {
+			return -1, true
+		}
+		if x > y {
+			return 1, true
+		}
+	}
+	if aa[4] == bb[4] {
+		return 0, true
+	}
+	if aa[4] == "" {
+		return 1, true
+	}
+	if bb[4] == "" {
+		return -1, true
+	}
+	x, y := strings.Split(aa[4], "."), strings.Split(bb[4], ".")
+	for i := 0; i < min(len(x), len(y)); i++ {
+		if x[i] == y[i] {
+			continue
+		}
+		nx, ex := strconv.ParseUint(x[i], 10, 64)
+		ny, ey := strconv.ParseUint(y[i], 10, 64)
+		if ex == nil && ey == nil {
+			if nx < ny {
+				return -1, true
+			}
+			return 1, true
+		}
+		if ex == nil {
+			return -1, true
+		}
+		if ey == nil {
+			return 1, true
+		}
+		if x[i] < y[i] {
+			return -1, true
+		}
+		return 1, true
+	}
+	if len(x) < len(y) {
+		return -1, true
+	}
+	return 1, true
+}
+func Notify(r Release, current, channel string, early bool) bool {
+	newer, ok := Compare(r.Version, current)
+	if !ok || newer < 0 {
+		return false
+	}
+	if newer == 0 {
+		return channel == "beta" && r.Channel == "public"
+	}
+	if channel == "beta" {
+		return true
+	}
+	return r.Channel == "public" || early
+}

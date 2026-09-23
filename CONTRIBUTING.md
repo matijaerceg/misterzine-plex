@@ -24,6 +24,12 @@ python3 -m unittest discover -s release -p 'test*.py'
 python3 tools/check_public_content.py
 ```
 
+Independent installer and publishing checks are described in
+[distribution](release/DISTRIBUTION.md). The real Downloader integration test
+uses a disposable `/media` card tree and a supplied official Downloader archive.
+`tools/check_update_device.py` exercises the synthetic lifecycle on MiSTer while
+preserving the normal installation; read its required fixture arguments first.
+
 Hardware-dependent changes also need a MiSTer smoke test. Test credentials and
 media must belong to the tester; playback can update watched state. Keep raw
 test journals and session notes in the private notes directory, outside Git.
