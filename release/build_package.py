@@ -15,11 +15,11 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build(out, core_tree, ident, version='0.1.0-alpha.1'):
+def build(out, core_tree, ident, version='0.1.0-beta.1'):
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='misterzine-package-') as tmp:
         stage = Path(tmp)
-        package = stage / 'misterzine-plex-alpha'
+        package = stage / 'misterzine-plex-beta'
         payload = package / 'payload'
         payload.mkdir(parents=True)
         inputs = {'plexcrt': ROOT / 'app/dist/plexcrt', 'plexplay.py': ROOT / 'arm/plexplay.py',
@@ -41,7 +41,7 @@ def build(out, core_tree, ident, version='0.1.0-alpha.1'):
         shutil.copytree(ROOT / 'release/licenses', package / 'licenses')
         script = stage / 'Scripts/MisterZine-Plex-Install.sh'
         script.parent.mkdir()
-        script.write_text('#!/bin/bash\nset -e\npython3 /media/fat/misterzine-plex-alpha/manager.py install\npython3 /media/fat/misterzine-plex/manager.py run\n', newline='\n')
+        script.write_text('#!/bin/bash\nset -e\npython3 /media/fat/misterzine-plex-beta/manager.py install\npython3 /media/fat/misterzine-plex/manager.py run\n', newline='\n')
         source = package / 'corresponding-source.zip'
         with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED) as archive:
             # Complete source directories, without Quartus build products/history.
@@ -74,6 +74,6 @@ if __name__ == '__main__':
     p.add_argument('--out', type=Path, default=ROOT / 'release/dist')
     p.add_argument('--core-tree', type=Path, default=ROOT / 'core')
     p.add_argument('--id', default='source-build')
-    p.add_argument('--version', default='0.1.0-alpha.1')
+    p.add_argument('--version', default='0.1.0-beta.1')
     args = p.parse_args()
     build(args.out, args.core_tree, args.id, args.version)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install and launch a self-contained MisterZine Plex Core alpha.
+"""Install and launch a self-contained MisterZine Plex Core release.
 
 Only named files are replaced. Old releases, account settings and caches are
 preserved. This module also runs against a temporary card root in its tests.
@@ -461,7 +461,7 @@ def run(root):
                     elif time.monotonic() - changed > 2:
                         break
                 if child.poll() not in (None, 0):
-                    raise RuntimeError('App could not start. Run MisterZine-Plex-Core-Diagnostics and check the report.')
+                    raise RuntimeError('App could not start. Run MisterZine-Plex-Diagnostics and check the report.')
             finally:
                 stop_child(child)
                 cleanup_player(folder)

@@ -41,7 +41,7 @@ def exercise(card, source, public_app, beta_app, inspect=False):
     work=card/'fixture-packages';work.mkdir()
 
     def package(ident,version,channel,app):
-        folder=work/ident/'misterzine-plex-alpha';(folder/'payload').mkdir(parents=True)
+        folder=work/ident/'misterzine-plex-beta';(folder/'payload').mkdir(parents=True)
         for name in manager.PAYLOAD:
             shutil.copyfile(app if name=='plexcrt' else active/name,folder/'payload'/name)
         for name in service.HELPERS: shutil.copyfile(Path(service.__file__).parent/name,folder/name)

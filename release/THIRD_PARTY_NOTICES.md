@@ -44,7 +44,7 @@ Archive SHA-256:
 That upstream build enables GPL version 3 components. Its `GPLv3.txt` and
 `readme.txt` are retained in the installed `decoder-notices` folder. Upstream
 build information and source links: https://johnvansickle.com/ffmpeg/
-The alpha ZIP does not bundle or relicense that decoder archive.
+The release ZIP does not bundle or relicense that decoder archive.
 
 Plex and MiSTer names belong to their respective owners. This project is
 independent and is not endorsed by Plex.

@@ -54,7 +54,7 @@ Plex. Return to MiSTer Menu before using it. **MisterZine-Plex-Uninstall** works
 offline and removes Plex binaries, entries, staging files and its database
 registration. The default keeps sign-in, preferences, artwork and acquired codes.
 Removing all Plex data requires typing **REMOVE**. Downloader and unrelated files
-are preserved. A manually extracted `misterzine-plex-alpha` ZIP folder can be
+are preserved. A manually extracted `misterzine-plex-beta` ZIP folder can be
 removed separately after installation.
 
 ### Showcase captures

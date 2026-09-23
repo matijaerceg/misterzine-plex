@@ -163,7 +163,7 @@ def unpack(archive, destination, release):
             if total > 512 * 1024 * 1024 or len(seen) > 4096:
                 raise ValueError('Release archive is too large')
         z.extractall(destination)
-    package = destination / 'misterzine-plex-alpha'
+    package = destination / 'misterzine-plex-beta'
     manifest = json.loads((package / 'manifest.json').read_text())
     if not releases.manifest_matches(manifest, release):
         raise ValueError('Package does not match the selected release. Check for updates again.')

@@ -64,7 +64,7 @@ class UpdateTests(unittest.TestCase):
         version = '1.0.0' if channel == 'public' else '1.1.0-beta.1'
         access = None if channel == 'public' else {'batch': 'fixture', 'sha256': hashlib.sha256(b'012345').hexdigest()}
         files = {}
-        package = self.fixture / ident / 'misterzine-plex-alpha'
+        package = self.fixture / ident / 'misterzine-plex-beta'
         (package / 'payload').mkdir(parents=True)
         for name in manager.PAYLOAD:
             data = (ident + name).encode()
@@ -145,7 +145,7 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse((self.root / 'active.json').exists())
 
     def test_unsafe_archives_and_identity_mismatch(self):
-        for name in ('../escape', '/absolute', 'misterzine-plex-alpha/../../escape', 'C:/escape'):
+        for name in ('../escape', '/absolute', 'misterzine-plex-beta/../../escape', 'C:/escape'):
             with self.subTest(name=name):
                 r, z, _ = self.release('unsafe-' + str(abs(hash(name))))
                 with zipfile.ZipFile(z, 'a') as archive:

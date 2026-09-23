@@ -5,7 +5,6 @@ Maintainer instructions. For entering a member code, see
 
 ## Creating releases
 
-
 Generate a code once for a new access batch (the label below is an example):
 
 ```sh

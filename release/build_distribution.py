@@ -46,7 +46,7 @@ def build(package, tag, notes, out, previous=None):
     if not catalogue.IDENT.fullmatch(tag):
         raise ValueError('Invalid release tag')
     with zipfile.ZipFile(package) as z:
-        manifest = json.loads(z.read('misterzine-plex-alpha/manifest.json'))
+        manifest = json.loads(z.read('misterzine-plex-beta/manifest.json'))
     base = 'https://github.com/' + REPO + '/releases/download/' + tag + '/'
     channel = manifest.get('channel')
     release = {'id': manifest['id'], 'version': manifest['version'], 'channel': channel,
