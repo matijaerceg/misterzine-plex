@@ -109,8 +109,21 @@ func (h *Home) focusSeason(i int) {
 // recently added, fetched together.
 func (h *Home) reload() {
 	h.refreshResult = nil // discard any older background request
-	h.refreshAt = time.Now().Add(30 * time.Second)
 	hubs, err := fetchHome(h.app.Plex)
+	h.load(hubs, err)
+}
+
+// newHomeFrom builds the home screen from rows fetched elsewhere (at
+// startup, while the starting frame is on screen).
+func newHomeFrom(app *App, r homeResult) *Home {
+	h := &Home{app: app, home: true}
+	h.load(r.hubs, r.err)
+	return h
+}
+
+// load installs a fetch result and schedules the next background refresh.
+func (h *Home) load(hubs []*plex.Hub, err error) {
+	h.refreshAt = time.Now().Add(30 * time.Second)
 	h.err = err
 	if err != nil {
 		h.app.Log.Printf("home: %v", err)

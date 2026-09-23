@@ -590,13 +590,27 @@ func (a *App) Start() {
 		a.osd.Bar(0, 0, 0, 0, 0, false)
 	}
 	if a.Plex != nil {
-		// the first home fetch takes seconds on a slow server: put the
-		// background and the mark on screen before asking for anything
+		// the first home fetch takes seconds on a slow server: fetch in
+		// the background and keep the starting frame on screen meanwhile
+		// (the core goes black when frames stop for two seconds)
+		done := make(chan homeResult, 1)
+		client := a.Plex
+		go func() {
+			hubs, err := fetchHome(client)
+			done <- homeResult{hubs, err}
+		}()
 		a.Push(&starting{app: a})
-		a.redraw()
-		a.stack[len(a.stack)-1] = NewHome(a)
-		a.dirty = true
-		return
+		for {
+			a.redraw()
+			select {
+			case r := <-done:
+				a.stack[len(a.stack)-1] = newHomeFrom(a, r)
+				a.dirty = true
+				return
+			default:
+				a.Out.WaitField(20 * time.Millisecond)
+			}
+		}
 	}
 	a.Push(NewLogin(a))
 }
