@@ -365,17 +365,20 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 	// The overlay is drawn once per field, right after the core's field
 	// counter moves, and at once after a key. The dot's run and the
 	// focus bar are sprites the core draws from single word stores.
-	tick := time.NewTicker(2 * time.Millisecond)
+	//
+	// The decoder has the machine: this loop wakes every half field, the
+	// pad is polled once a field (the core posts it that often) and no
+	// thread here outranks ffmpeg. Polling at 1 kHz from a raised
+	// priority cost the decoder a late frame every two seconds.
+	tick := time.NewTicker(8 * time.Millisecond)
 	defer tick.Stop()
+	input.Relax(true)
+	defer input.Relax(false)
 	fields, _ := a.Out.(interface{ Field() uint32 })
 	var lastField uint32
 	if fields != nil {
 		lastField = fields.Field()
 	}
-	// above the decoder and the presenter, but not real-time: the dot and
-	// the bar are the core's, so nothing here has to run every field
-	restore := raisePriority(-10)
-	defer restore()
 	// two cores: more Ps only spin looking for work against the decoder
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
 	up := false

@@ -4,6 +4,7 @@
 package input
 
 import (
+	"sync/atomic"
 	"time"
 )
 
@@ -50,6 +51,7 @@ const (
 	repeatDelay    = 400 * time.Millisecond
 	repeatRate     = 140 * time.Millisecond // keep equal to ui.RepeatDur
 	pollPeriod     = 1 * time.Millisecond   // the core posts the pad every field; catch it the ms it lands
+	playPollPeriod = 16 * time.Millisecond  // during playback: the decoder needs the core more than the pad does
 	backspaceDelay = 250 * time.Millisecond
 	backspaceRate  = 45 * time.Millisecond
 )
@@ -61,6 +63,12 @@ var ps2map = map[int]Key{
 	0x17D: JumpBack, 0x17A: JumpFwd, // PgUp / PgDn
 	0x1D: Up, 0x1B: Down, 0x1C: Left, 0x23: Right, // WASD
 }
+
+// relaxed is set while video plays: the poll slows to playPollPeriod.
+var relaxed atomic.Bool
+
+// Relax slows the poll while video plays (true) and restores it (false).
+func Relax(on bool) { relaxed.Store(on) }
 
 // Poll reads the words every few ms and sends events on the returned channel.
 func Poll(src Source, stop <-chan struct{}) <-chan Event {
@@ -75,6 +83,7 @@ func Poll(src Source, stop <-chan struct{}) <-chan Event {
 		reps := 0
 		t := time.NewTicker(pollPeriod)
 		defer t.Stop()
+		period := pollPeriod
 		for {
 			var now time.Time
 			select {
@@ -82,6 +91,14 @@ func Poll(src Source, stop <-chan struct{}) <-chan Event {
 				close(out)
 				return
 			case now = <-t.C:
+			}
+			want := pollPeriod
+			if relaxed.Load() {
+				want = playPollPeriod
+			}
+			if want != period {
+				t.Reset(want)
+				period = want
 			}
 			j := src.Joy()
 			cur := (j | j>>16) & 0xFF // either pad; d-pad, OK, Back, L, R
