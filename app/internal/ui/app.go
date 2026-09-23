@@ -366,14 +366,11 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 	// counter moves, and at once after a key. The dot's run and the
 	// focus bar are sprites the core draws from single word stores.
 	//
-	// The decoder has the machine: this loop wakes every half field, the
-	// pad is polled once a field (the core posts it that often) and no
-	// thread here outranks ffmpeg. Polling at 1 kHz from a raised
+	// The decoder has the machine: this loop wakes every half field and
+	// no thread here outranks ffmpeg. Waking at 500 Hz from a raised
 	// priority cost the decoder a late frame every two seconds.
 	tick := time.NewTicker(8 * time.Millisecond)
 	defer tick.Stop()
-	input.Relax(true)
-	defer input.Relax(false)
 	fields, _ := a.Out.(interface{ Field() uint32 })
 	var lastField uint32
 	if fields != nil {
