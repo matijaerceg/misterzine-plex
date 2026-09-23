@@ -2,14 +2,14 @@
   "schema": 1,
   "releases": {
     "beta": {
-      "id": "beta-0.1.0-beta.1",
-      "version": "0.1.0-beta.1",
+      "id": "beta-0.1.0-beta.2",
+      "version": "0.1.0-beta.2",
       "channel": "beta",
-      "notes": "Native Plex client for MiSTer. Built for CRTs at 480i over Component, RGB, S-Video or Composite, with 480p on HDMI.\n\nBeta access. This is a paid early-access build. Install and browsing work without a code. Playback needs the code from the MisterZine Patreon post. Stable releases will be free and codeless.\n\nRequirements\n- Networked MiSTer on current MiSTer Linux\n- 250 MB free on the SD card\n- Plex account with a server that can transcode\n\nInstall\n1. Download the Beta installer below and put it in the SD card's Scripts folder.\n2. Run it from Scripts.\n3. Follow the sign-in screen at plex.tv/link.\n\nIn this release\n- Home, library, show, season and episode views\n- Search\n- Playback with scrubbing, skip intro, skip credits, autoplay next\n- 480i on CRT outputs; toggleable 480p on HDMI, auto-revert to 480i on 15 kHz ini settings\n- Theme music and nav sounds\n- Bitrate setting\n- In-app updates\n- Install/uninstall script\n\nNTSC 480i only; PAL isn't supported yet. Beta software: start with a small test library, since playback and watched marks update your real Plex account.\n",
-      "url": "https://github.com/matijaerceg/misterzine-plex-core/releases/download/v0.1.0-beta.1/MisterZine-Plex-Core-beta-0.1.0-beta.1.zip",
+      "notes": "Native Plex client for MiSTer. Built for CRTs at 480i over Component, RGB, S-Video or Composite, with 480p on HDMI.\n\nBeta access. This is a paid early-access build. Install and browsing work without a code. Playback needs the code from the MisterZine Patreon post. Stable releases will be free and codeless.\n\nNew in beta.2\n- Smoother playback: the app stays out of the decoder's way and the decoder skips the H.264 loop filter, so scenes that stuttered in beta.1 play clean\n- Seeking keeps the last frame on screen instead of cutting to black\n- Left/right with the controls hidden shows a strip with the title, progress bar and times; taps and holds add up into one seek\n- The scrubber seeks on its own shortly after you let go, no OK needed\n- Play cuts to black at once and shows the title and progress while the stream starts\n- The 4:3 filter now judges shows by their first episode and applies to every library view\n- An amber dot in the menu marks a waiting update; the Options page shows when it scrolls\n- Update failures are explained on screen and kept in a log for diagnostics\n\nRequirements\n- Networked MiSTer on current MiSTer Linux\n- 250 MB free on the SD card\n- Plex account with a server that can transcode\n\nInstall\n1. Download the Beta installer below and put it in the SD card's Scripts folder.\n2. Run it from Scripts.\n3. Follow the sign-in screen at plex.tv/link.\n\nAlready on beta.1: open Options > Updates in the app and install from there.\n\nNTSC 480i only; PAL isn't supported yet. Beta software: start with a small test library, since playback and watched marks update your real Plex account.\n",
+      "url": "https://github.com/matijaerceg/misterzine-plex-core/releases/download/v0.1.0-beta.2/MisterZine-Plex-Core-beta-0.1.0-beta.2.zip",
       "db_url": "https://raw.githubusercontent.com/matijaerceg/misterzine-plex-core/distribution/beta.json.zip",
-      "size": 4812261,
-      "sha256": "9d82a1f69d687af27ba332eb59b714a37a57e9bc285036a2b0a5911bce174b6e",
+      "size": 4823793,
+      "sha256": "425642bc5c6463e45ce2a509caf1960f40e9569008bee918e0137ce52246b090",
       "access": {
         "batch": "initial-beta",
         "sha256": "7915f13296ba503857c14e7a2070b1e79bc85c0bd40fdb8c8e103bcfaab5d192"
