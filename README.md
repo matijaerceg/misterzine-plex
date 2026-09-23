@@ -22,8 +22,10 @@ Next time, open **MisterZine Plex Core** from the main menu.
 
 CRT output is NTSC 480i; PAL isn't supported yet. HDMI supports 480p rendering.
 
-This is beta software. Expect bugs, and start with a small test library:
-playback and the watched/unwatched controls update your real Plex account.
+This is unstable beta software. It talks to your real Plex account: playback,
+watched marks and resume points change your library, and a bug could change
+them wrongly. Use it at your own risk; no responsibility is taken for what it
+does to your library or your MiSTer.
 
 [Need help?](release/README.md) · [Build and contribute](CONTRIBUTING.md)
 

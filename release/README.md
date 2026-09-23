@@ -2,6 +2,13 @@
 
 [Downloads](https://github.com/matijaerceg/misterzine-plex-core/releases) · [Installation](https://github.com/matijaerceg/misterzine-plex-core#install)
 
+### Before you start
+
+This is unstable beta software. It talks to your real Plex account: playback,
+watched marks and resume points change your library, and a bug could change
+them wrongly. Use it at your own risk; no responsibility is taken for what it
+does to your library or your MiSTer.
+
 ### How do I use it?
 
 D-pad moves, OK selects, and Back returns or opens the menu. During playback,
