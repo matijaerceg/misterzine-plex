@@ -61,13 +61,14 @@ type Screen interface {
 
 // App owns the screens, the canvas and the services.
 type App struct {
-	Plex   *plex.Client
-	Art    *Art
-	F      Fonts
-	Out    Presenter
-	Player *Player
-	Log    *log.Logger
-	T      *gfx.TextCache
+	updates updateState
+	Plex    *plex.Client
+	Art     *Art
+	F       Fonts
+	Out     Presenter
+	Player  *Player
+	Log     *log.Logger
+	T       *gfx.TextCache
 
 	// Wake is signalled by background fetches (art, pages) to request a redraw.
 	Wake chan struct{}
@@ -75,7 +76,8 @@ type App struct {
 	// show it as a spinner); zero otherwise.
 	Starting time.Time
 	// Mark is the app's wordmark, rendered once.
-	Mark *Wordmark
+	Mark     *Wordmark
+	betaMark *gfx.Image
 	// Cfg is the user's settings (Options screen) and sign-in.
 	Cfg            *Config
 	Showcase       bool // session-only capture privacy
@@ -267,7 +269,7 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 	if a.Player.Access != nil {
 		if err := a.Player.Access(); err != nil {
 			if err == beta.ErrLocked {
-				a.Push(&BetaAccess{app: a})
+				a.Push(NewBetaAccess(a, func() { a.PlayQueue(it, offset, queue, idx) }))
 			} else {
 				a.Notice, a.NoticeAt = err.Error(), time.Now()
 				a.dirty = true
@@ -743,6 +745,7 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 	runtime.LockOSThread()
 	syscall.Setpriority(syscall.PRIO_PROCESS, 0, -5)
 	animating := false
+	readyFile := os.Getenv("MISTERZINE_PLEX_READY_FILE")
 	var worst, total time.Duration
 	frames, late := 0, 0
 	lastStat := time.Now()
@@ -797,6 +800,7 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 			}
 		}
 		a.runLater()
+		a.pollUpdates(time.Now())
 		if h, ok := a.top().(*Home); ok {
 			h.pollHome(time.Now())
 		}
@@ -855,6 +859,11 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 			}
 			// pacing report: every 600 drawn frames, or after a burst of
 			// at least 60 once things go quiet for a few seconds
+			if readyFile != "" {
+				if err := os.WriteFile(readyFile, []byte("ready\n"), 0600); err == nil {
+					readyFile = ""
+				}
+			}
 			if frames++; frames%600 == 0 || (frames >= 60 && time.Since(lastStat) > 5*time.Second) {
 				a.Log.Printf("frames %d: avg %.1f ms, worst %.1f ms, missed fields %d", frames, float64(total)/float64(frames)/1e6, float64(worst)/1e6, late)
 				worst, total, late, frames = 0, 0, 0, 0
@@ -910,6 +919,7 @@ func (a *App) key(ev input.Event, now time.Time) {
 func (a *App) DrawOnce() *gfx.Canvas {
 	c := a.Out.Begin()
 	a.top().Draw(c, time.Now())
+	a.drawBetaBrand(c)
 	a.Out.End()
 	return c
 }

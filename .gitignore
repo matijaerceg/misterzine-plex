@@ -51,3 +51,7 @@ plexcrt.json*
 # local design sources and editor locks
 brand/*.af
 brand/*.af~lock~
+
+# private beta access material
+*.code
+*.receipt

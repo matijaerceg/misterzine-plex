@@ -1,28 +1,46 @@
-# MisterZine Plex Core — limited alpha
+# MisterZine Plex Core
 
 This is an early, independent Plex client for MiSTer. It is not affiliated with
 or endorsed by Plex. Expect bugs. Start with a small test library: playback and
 the watched/unwatched controls update your real Plex account.
 
-Official Patreon beta builds require a key for playback. See
-[Beta access](BETA_ACCESS.md) for installation instructions. Public builds
-do not require a key.
+Official Patreon beta builds require a six-digit member code for playback. See
+[Beta access](BETA_ACCESS.md) for unlocking instructions. Public builds
+do not require a code.
 
 ## Install
 
 1. Use a current MiSTer Linux installation, a network connection, and a Plex
    account with access to a server capable of transcoding the chosen media.
-2. Extract this ZIP onto the root of your MiSTer SD card. It adds an installer
-   under `Scripts` and a `misterzine-plex-alpha` package folder.
-3. On MiSTer, run **Scripts > MisterZine-Plex-Core-Install**. The first installation
-   downloads and verifies the pinned FFmpeg decoder. Allow about 150 MB free,
-   plus space for cached artwork and future releases.
-4. Run **Scripts > MisterZine-Plex-Core-Run**. Use the displayed code at
-   **plex.tv/link**, then choose your server. Settings are saved locally.
+2. From the GitHub release, choose `MisterZine-Plex-Install-Public.sh` for the latest
+   public release, `MisterZine-Plex-Install-Beta.sh` for the latest early-access
+   release, or `MisterZine-Plex-Install-<version>.sh` for that exact version.
+   A channel's script is offered only after that channel has a published release.
+   Copy the chosen script into the card's `Scripts` folder.
+3. Run that script from **Scripts**. It locates MiSTer Downloader (including
+   the copy installed by Update All), or downloads a verified official copy if
+   needed. Only the Plex database runs. Other databases and settings stay intact.
+4. Installation proceeds without a confirmation prompt, including when the Linux
+   console is not visible. The filename selects the channel or exact version.
+   Early-access playback needs a paid Patreon code. The installer verifies the
+   package and decoder, then opens Plex.
+5. Use the displayed Plex sign-in code at **plex.tv/link**, then choose your server.
+   Subsequently launch **MisterZine Plex Core** from the main menu.
 
-The Scripts entry loads the matching core and app together. Loading an RBF
-directly does not start the app. This alpha has its own Scripts entry; it does
-not modify the separate MisterZine launcher or your MiSTer INI files.
+Use current MiSTer Linux with Python 3.9 or newer. Allow at least 250 MB free,
+plus artwork cache and retained releases. Download, verification and installation
+have separate progress stages. Repeating installation repairs files without
+resetting settings. A standalone installer does not require Update All.
+
+For manual ZIP installation, extract the package onto the card root and run its
+`Scripts/MisterZine-Plex-Install.sh`. It installs the included package from
+`misterzine-plex-alpha`; the first decoder download still requires a connection.
+
+The main-menu entry loads the matching core and app together. Loading an RBF
+directly does not start the app. Installation adds a small boot helper to
+`linux/user-startup.sh`, preserving other startup commands. It does not modify
+the separate MisterZine frontend or your MiSTer INI files. Rollback, diagnostics
+and uninstall remain available in Scripts if the app cannot open.
 
 ## Controls
 
@@ -67,17 +85,35 @@ settings may leave borders. Automatic detection of RGB-only CRTs is not included
 
 ## Update, rollback and remove
 
-Return to the MiSTer Menu first. Extract the next package and run its installer.
-It verifies the new files before selecting the new release. Your account,
-settings and cache remain in `/media/fat/misterzine-plex`.
+Open **Options > Updates** for available versions, release notes and download
+sizes. Checks run in the background at startup and every six hours while browsing.
+Failed background checks stay quiet. Manual checks show errors; previously fetched
+release information remains available offline.
 
-**MisterZine-Plex-Core-Rollback** selects the previous installed release. It is
-available after your first update; it leaves current settings in place.
+Public builds notify about newer public releases. Early-access notifications are
+off by default but can be enabled in Updates. Beta builds notify about newer betas
+and public releases that catch up. Older public versions remain an explicit channel
+choice. Dismiss a release notification from its detail page. Nothing installs or
+switches channels automatically.
 
-**MisterZine-Plex-Core-Remove** disables this app's Scripts entries. It preserves the
-account, cache and binaries so you can restore them by running the installer.
-For complete removal, sign out first, then remove the `misterzine-plex` and
-`misterzine-plex-alpha` folders using your usual SD card file manager.
+If a beta needs a code you have not saved, choose **Enter code and update**, or
+**Install for browsing**. Your current version will keep working. Codes and older
+receipts survive updates and rollback. Downloading continues if Plex closes;
+activation waits for **Restart now**. **Later** leaves the current version active.
+If startup fails, the previous selection is restored.
+
+An ordinary Downloader run can refresh `misterzine-plex-downloads/package.zip`;
+it cannot activate that package. The selected channel is registered in
+`downloader_misterzine_plex.ini`. Installation data stays in
+`/media/fat/misterzine-plex`.
+
+**MisterZine-Plex-Rollback** selects the previous installed release without opening
+Plex. Return to MiSTer Menu before using it. **MisterZine-Plex-Uninstall** works
+offline and removes Plex binaries, entries, staging files and its database
+registration. The default keeps sign-in, preferences, artwork and acquired codes.
+Removing all Plex data requires typing **REMOVE**. Downloader and unrelated files
+are preserved. A manually extracted `misterzine-plex-alpha` ZIP folder can be
+removed separately after installation.
 
 ## If something goes wrong
 
@@ -88,7 +124,7 @@ For complete removal, sign out first, then remove the `misterzine-plex` and
   the installer. Missing dependencies are reported before loading the core.
 - Damaged settings: a valid backup is restored when possible; otherwise the
   app asks you to sign in again. The damaged file is preserved on the card.
-- Return to MiSTer Menu, then run **MisterZine-Plex-Core-Diagnostics**. It writes
+- Return to MiSTer Menu, then run **MisterZine-Plex-Diagnostics**. It writes
   `/media/fat/misterzine-plex/diagnostics.json`. Review it before sharing: media
   titles and playback details can appear. Never share `plexcrt.json`, its
   backups, `.plextoken`, or an unreviewed card image.
@@ -99,7 +135,7 @@ The artwork/theme cache has no disk quota yet; monitor SD card space.
 
 ## Quick hardware test
 
-On each unit: install and launch from Scripts; link and select a server; browse;
+On each unit: install from Scripts and launch from the main menu; link and select a server; browse;
 play, pause, seek and stop one item; check theme/taps; leave to MiSTer Menu and
 relaunch. Confirm the active CRT profile stays at 480i. On HDMI, test the 480p
 hold-to-confirm and timeout-to-revert once. Check normal startup has no test card.

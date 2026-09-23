@@ -48,3 +48,12 @@ The alpha ZIP does not bundle or relicense that decoder archive.
 
 Plex and MiSTer names belong to their respective owners. This project is
 independent and is not endorsed by Plex.
+
+## MiSTer Downloader
+
+The independent installer can download the official GPL-3.0 MiSTer Downloader
+from https://github.com/MiSTer-devel/Downloader_MiSTer. It is not embedded in the
+Plex package. Its source revision and hashes are pinned in `update_service.py`.
+Discovery and isolated invocation were informed by the MIT-licensed MisterZine
+on-device project (Copyright 2026 Matija Erceg):
+https://github.com/matijaerceg/misterzine-on-device.

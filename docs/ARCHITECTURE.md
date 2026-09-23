@@ -15,7 +15,9 @@ The installer selects versioned releases, verifies payload hashes and keeps
 settings/cache separate. Rollback selects the previous release. Existing data
 paths and legacy launcher migration are retained across the product rename.
 
-Official beta apps optionally check an offline batch key before playback.
+Official beta apps check offline batch access before playback. Numeric-code builds
+save unlock receipts separately from account settings; legacy file-key batches
+remain supported. Explicit release-channel metadata controls beta branding.
 Development/public builds are unlocked. This convenience check is separate from
 the FPGA core and presenter and can be removed in modified application builds;
 it is not a guarantee of exclusive access.

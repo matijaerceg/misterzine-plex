@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"plexcrt/internal/beta"
 	"plexcrt/internal/gfx"
 	"plexcrt/internal/input"
 	"plexcrt/internal/plex"
@@ -143,6 +144,10 @@ func (d *Drawer) compose() {
 	c := d.page
 	c.Fill(0, 0, c.W, c.H, gfx.Bg)
 	d.app.Mark.Place(c, MenuX, SafeY-8)
+	if beta.IsBeta() {
+		d.app.betaBadge(c, MenuX+d.app.Mark.W+12, SafeY)
+		d.app.text(c, MenuX, SafeBottom-20, d.app.F.SmallBold, gfx.Amber, d.app.F.SmallBold.Fit(d.app.Version, DrawerW-MenuX-12))
+	}
 	f := d.app.F.Body
 	y := DrawerY0
 	for i, it := range d.items {
@@ -152,6 +157,9 @@ func (d *Drawer) compose() {
 			menuFocusBar(c, MenuX, y, f.Height())
 		}
 		title := it.Title
+		if it.Type == "options" && d.app.updateAvailable() {
+			title = "Options  •"
+		}
 		if it.Type == "section" && d.app.Showcase {
 			if section, ok := d.app.section(it.Key); ok {
 				title = d.app.libraryLabel(section)
