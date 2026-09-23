@@ -12,7 +12,7 @@ GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -trimpath -o dist/plexcrt .
 cd ..
 ```
 
-Normal source builds are unlocked. See [beta builds](../release/BETA_ACCESS.md)
+Normal source builds are unlocked. See [beta builds](BETA_RELEASES.md)
 for explicit release-channel builds. The app's version is available via -version.
 
 ## FPGA core

@@ -1,5 +1,9 @@
 # Contributing
 
+Start with [help and bug reports](release/README.md).
+Maintainers can follow [beta release preparation](docs/BETA_RELEASES.md) and the
+[release hardware check](docs/HARDWARE_CHECK.md).
+
 Report bugs with the app version, MiSTer hardware, output cable/profile, local or
 remote server, and reproduction steps. Review diagnostics before sharing them;
 never attach account files, patron keys or unreviewed card images.
@@ -29,3 +33,5 @@ preserving the normal installation; read its required fixture arguments first.
 Hardware-dependent changes also need a MiSTer smoke test. Test credentials and
 media must belong to the tester; playback can update watched state. Keep raw
 test journals and session notes in the private notes directory, outside Git.
+
+[Build from source](docs/BUILD.md) · [Architecture](docs/ARCHITECTURE.md) · [Detailed reference](docs/REFERENCE.md)

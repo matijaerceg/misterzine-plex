@@ -1,0 +1,58 @@
+name: Bug report
+description: Report an installation, browsing, display or playback problem.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [help page](https://github.com/matijaerceg/misterzine-plex-core/blob/main/release/README.md) first.
+        Do not post Plex tokens, account files, member codes, beta keys, unlock receipts or server addresses. Review diagnostics and screenshots before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: App version / release ID
+      description: Find this in Options. If installation failed, name the release you downloaded.
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: MiSTer hardware and system version
+      placeholder: Board model and MiSTer Linux version
+    validations:
+      required: true
+  - type: input
+    id: display
+    attributes:
+      label: Display and connection
+      description: CRT or HDMI, cable/output profile, and selected video mode.
+    validations:
+      required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Plex server connection
+      options:
+        - Local network
+        - Remote
+        - Not applicable / unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include relevant settings, without account or media identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Reviewed diagnostics or screenshots (optional)
+      description: Remove private details before attaching files. See the help page.

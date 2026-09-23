@@ -17,7 +17,7 @@ overrides global filters without rewriting the user's configuration.
 1. Build the core and presenter from the matching source using `docs/BUILD.md`.
 2. Build the app with `beta_release.py build`, explicitly selecting public or beta,
    version and release ID. For beta, select an existing private batch or manually
-   create a new one as described in `BETA_ACCESS.md`. No automatic rotation occurs.
+   create a new one as described in [beta release preparation](../docs/BETA_RELEASES.md). No automatic rotation occurs.
 3. Run `build_package.py` with the same ID and version. Its build stamp must match
    the binary hash. The package allowlist excludes keys, raw codes and receipts.
 4. Write user-facing release notes, then prepare distribution assets:
