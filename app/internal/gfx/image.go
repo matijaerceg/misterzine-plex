@@ -91,6 +91,36 @@ func (im *Image) ScaleH(h int) *Image {
 	return out
 }
 
+// Shrink resamples the picture down to w x h with a box filter (every
+// source pixel contributes once), for badges drawn large and shown small.
+func (im *Image) Shrink(w, h int) *Image {
+	if w >= im.W || h >= im.H || w < 1 || h < 1 {
+		return im
+	}
+	out := &Image{W: w, H: h, Pix: make([]byte, w*h*4), Alpha: im.Alpha}
+	for y := 0; y < h; y++ {
+		y0, y1 := y*im.H/h, (y+1)*im.H/h
+		for x := 0; x < w; x++ {
+			x0, x1 := x*im.W/w, (x+1)*im.W/w
+			var sum [4]int
+			for sy := y0; sy < y1; sy++ {
+				for sx := x0; sx < x1; sx++ {
+					o := (sy*im.W + sx) * 4
+					for i := range sum {
+						sum[i] += int(im.Pix[o+i])
+					}
+				}
+			}
+			n := (y1 - y0) * (x1 - x0)
+			o := (y*w + x) * 4
+			for i := range sum {
+				out.Pix[o+i] = byte((sum[i] + n/2) / n)
+			}
+		}
+	}
+	return out
+}
+
 // WritePPM saves the canvas as a binary PPM (for off-CRT checks).
 func (c *Canvas) WritePPM(path string) error {
 	out := make([]byte, 0, c.W*c.H*3+20)
