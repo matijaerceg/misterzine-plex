@@ -187,7 +187,10 @@ class Player:
         # a 4:3 source works out a few lines taller than 480: cap it, or pad fails
         vf = ('scale=720:min(480\\,trunc(480*4/3*ih/iw/2)*2):flags=fast_bilinear,'
               'pad=720:480:0:(480-ih)/2,format=yuv420p')
-        ff = [FF, '-nostdin', '-loglevel', 'warning', '-threads', '2',
+        # the H.264 loop filter costs a fifth of the machine and composite
+        # blurs what it smooths: off unless PLEX_LOOP_FILTER asks for it
+        decode = [] if os.environ.get('PLEX_LOOP_FILTER') else ['-skip_loop_filter', 'all', '-flags2', 'fast']
+        ff = [FF, '-nostdin', '-loglevel', 'warning', '-threads', '2'] + decode + [
               '-reconnect', '1', '-reconnect_streamed', '1', '-rw_timeout', '15000000',
               '-headers', 'X-Plex-Token: '+TOKEN+'\r\n', '-i', url,
               '-map', '0:v:0', '-vf', vf, '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p',
