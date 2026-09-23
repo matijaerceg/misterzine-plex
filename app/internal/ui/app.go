@@ -261,10 +261,11 @@ func (a *App) pager(path string, q url.Values, filter func(*plex.Item) bool) *Pa
 func (a *App) PlayAt(it *plex.Item, offset int) { a.PlayQueue(it, offset, nil, 0) }
 
 // PlayQueue is PlayAt with the items around it (a season's episodes), so
-// the overlay's Prev and Next can move along them. The current screen
-// keeps drawing, with Starting set, until the presenter publishes its
-// first frame; then the UI stops presenting and drives the overlay until
-// playback ends.
+// the overlay's Prev and Next can move along them. The screen cuts to
+// black at once, with the title, the bar and the times on the overlay
+// while the stream comes up; when the presenter publishes its first
+// frame the UI stops presenting and drives the overlay until playback
+// ends.
 func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) {
 	if a.Player == nil {
 		return
@@ -312,7 +313,7 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 	for {
 		a.Log.Printf("play %s (%s) at %d", it.Title, it.RatingKey, offset)
 		a.Starting = time.Now()
-		a.redraw()
+		a.blank()
 		sess, err := a.Player.Start(it.RatingKey, offset)
 		if err != nil {
 			a.Log.Printf("play: %v", err)
@@ -320,6 +321,10 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 			break
 		}
 		ctl := NewPlaying(a, it, queue, idx, sess.Send)
+		ctl.pos = float64(offset)
+		if offset < 0 {
+			ctl.pos = float64(it.ViewOffset)
+		}
 		next, ended := a.playLoop(sess, ctl)
 		if msg, err := os.ReadFile("/tmp/plexplay.stat.err"); err == nil && len(msg) > 0 {
 			a.Notice = plex.Fold(strings.TrimSpace(string(msg)))
@@ -344,6 +349,13 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 	}
 	a.Starting = time.Time{}
 	a.dirty = true
+}
+
+// blank presents a black frame: the menu is gone the moment Play is pressed.
+func (a *App) blank() {
+	c := a.Out.Begin()
+	c.Fill(0, 0, c.W, c.H, gfx.Black)
+	a.Out.End()
 }
 
 // playLoop runs one playback: spinner until the picture is up, then keys
@@ -418,11 +430,15 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 			}
 			if !up {
 				if a.Out.Foreign() || a.Player.Started(a.Starting) {
-					up = true // the video is on screen: stop drawing
+					up = true // the video is on screen: the strip runs out on its own
 					a.Starting = time.Time{}
 					continue
 				}
-				a.redraw()
+				if a.osd != nil {
+					// black under, the title and the bar over, until the picture
+					ctl.peekAt, ctl.peekFor = time.Now(), OsdLinger
+					ctl.Tick(time.Now(), a.osd, true)
+				}
 				continue
 			}
 			if a.osd != nil {

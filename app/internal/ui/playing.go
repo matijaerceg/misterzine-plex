@@ -27,8 +27,9 @@ type Playing struct {
 	send    func(string)
 	visible bool
 	shownAt time.Time
-	peekAt  time.Time // a closed-overlay seek: the bar and times peek until OsdFlash
-	peekH   int       // the peek's height, from the last compose
+	peekAt  time.Time     // a closed-overlay seek: the bar and times peek until OsdFlash
+	peekH   int           // the peek's height, from the last compose
+	peekFor time.Duration // how long the peek stays after peekAt; 0 means OsdFlash
 	focus   int
 	paused  bool
 	pos     float64
@@ -141,7 +142,8 @@ const (
 	OsdH      = 480 - OsdY
 	OsdAlpha  = 200
 	OsdHide   = 4 * time.Second
-	OsdFlash  = 2 * time.Second // how long a closed-overlay seek shows the bar
+	OsdFlash  = 2 * time.Second         // how long a closed-overlay seek shows the bar
+	OsdLinger = 3500 * time.Millisecond // how long the start strip stays over the picture
 	OsdBtnGap = 30
 	SkipHold  = 8 * time.Second // the skip button stays this long after the marker starts
 )
@@ -421,7 +423,7 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			p.dirty = true
 		} else {
 			p.seekBy(float64(10 * d))
-			p.peekAt = now
+			p.peekAt, p.peekFor = now, 0
 			p.dirty = true
 		}
 	case input.Back:
@@ -527,7 +529,7 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 		return
 	}
 	if peek {
-		// the bar and the times only, along the bottom edge: no cursor
+		// the title, the bar and the times, along the bottom edge: no cursor
 		osd.Dot(0, 0, 0, false)
 		osd.Bar(0, 0, 0, 0, 0, false)
 		key = "peek|" + itoa(int(p.pos))
@@ -627,11 +629,15 @@ func (p *Playing) skipKey() string {
 
 // peeking reports whether a closed-overlay seek is still showing its bar.
 func (p *Playing) peeking(now time.Time) bool {
-	return !p.peekAt.IsZero() && now.Sub(p.peekAt) < OsdFlash && !p.visible && p.list == nil
+	stay := p.peekFor
+	if stay == 0 {
+		stay = OsdFlash
+	}
+	return !p.peekAt.IsZero() && now.Sub(p.peekAt) < stay && !p.visible && p.list == nil
 }
 
-// compose paints the panel; for a peek only the bar and the times, and
-// peekH is set to the rows they take.
+// compose paints the panel; for a peek only the title, the bar and the
+// times, and peekH is set to the rows they take.
 func (p *Playing) compose(peek bool) {
 	c := &gfx.Canvas{W: 720, H: OsdH, Pix: p.canvas.Pix[:720*OsdH*4]}
 	f := p.app.F
@@ -655,7 +661,7 @@ func (p *Playing) compose(peek bool) {
 		sub = "S" + itoa(it.Parent) + " E" + itoa(it.Index) + "  " + it.Title
 	}
 	y := 14
-	if !peek {
+	{
 		p.app.text(c, SafeX, y, f.Body, gfx.GreyHi, f.Body.Fit(title, SafeW-320))
 		if sub != "" {
 			p.app.textRight(c, SafeX+SafeW, y+3, f.SmallBold, gfx.GreyLo, f.SmallBold.Fit(sub, 300))
