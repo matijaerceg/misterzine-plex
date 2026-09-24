@@ -172,5 +172,104 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('&v=1', value)
 
 
+class ReportTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.card = self.base / 'card'
+        self.root = self.card / 'misterzine-plex'
+        (self.root / 'releases/beta-9').mkdir(parents=True)
+        manager.write_json(self.root / 'active.json', {'current': 'beta-9', 'previous': None})
+        manager.write_json(self.root / 'releases/beta-9/manifest.json', {'id': 'beta-9', 'version': '0.1.0-beta.9', 'files': {}})
+        (self.root / 'plexcrt.json').write_text('{"token":"TESTtoken","server_url":"https://10-0-0-2.abc.plex.direct:32400"}')
+        (self.card / 'MiSTer.ini').write_text('[MiSTer]\nvideo_mode=8\nfb_terminal=1\n[Menu]\nmain=zaparoo/MiSTer_Zaparoo\n')
+        (self.card / 'linux').mkdir()
+        (self.card / 'linux/user-startup.sh').write_text('#!/bin/bash\nzaparoo.sh\n')
+        self.proc = self.base / 'proc/40'
+        self.proc.mkdir(parents=True)
+        (self.proc / 'comm').write_text('MiSTer_Zaparoo\n')
+        (self.proc / 'cmdline').write_bytes(b'/media/fat/zaparoo/MiSTer_Zaparoo\0')
+        exe = self.base / 'MiSTer_Zaparoo'
+        exe.write_bytes(b'not really main')
+        (self.proc / 'exe').symlink_to(exe)
+        self.tmp = self.base / 'tmp'
+        self.tmp.mkdir()
+        (self.tmp / 'misterzine-plex.log').write_text('watch: header wiped 3 times\nGET https://10-0-0-2.abc.plex.direct:32400/x?X-Plex-Token=TESTtoken\n')
+        (self.tmp / 'misterzine-plex.log.1').write_text('ring: no core\n')
+        (self.tmp / 'misterzine-plex-menu-run.log').write_text('12:00:00 launch: CORENAME MENU\n')
+
+    def report(self):
+        return manager.build_report(self.root, self.proc.parent, self.tmp, now=0)
+
+    def test_report_names_the_main_binary_and_keeps_secrets_out(self):
+        text = self.report()
+        self.assertTrue(text.startswith(manager.REPORT_MAGIC + '\nApp: MisterZine Plex Core 0.1.0-beta.9\nCreated: 1970-01-01T00:00:00Z\n'))
+        self.assertIn('main_binaries: ["MiSTer_Zaparoo ', text)
+        self.assertIn(hashlib.sha256(b'not really main').hexdigest()[:16], text)
+        self.assertIn('"fb_terminal": "1"', text)
+        self.assertIn('"main": "zaparoo/MiSTer_Zaparoo"', text)
+        self.assertIn('startup_hooks: ["zaparoo"]', text)
+        self.assertIn('== LOG misterzine-plex.log.1', text)
+        self.assertIn('== LOG misterzine-plex-menu-run.log', text)
+        self.assertIn('watch: header wiped 3 times', text)
+        self.assertNotIn('TESTtoken', text)
+        self.assertNotIn('10-0-0-2', text)
+        self.assertLessEqual(len(text.encode()), manager.REPORT_MAX_BYTES)
+
+    def test_report_trims_long_logs_to_the_limit(self):
+        (self.tmp / 'plexplay.log').write_text('x' * 200 + '\n' + 'a line of playback\n' * 20000)
+        text = self.report()
+        self.assertLessEqual(len(text.encode()), manager.REPORT_MAX_BYTES)
+        self.assertIn('a line of playback', text)
+        self.assertIn('watch: header wiped', text)
+
+    def test_send_report_reads_the_code_and_words_failures(self):
+        import io
+        import urllib.error
+
+        class Answer(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+        seen = {}
+
+        def ok(req, timeout):
+            seen['body'] = req.data
+            seen['type'] = req.get_header('Content-type')
+            return Answer(b'{"code":"K7M4"}')
+        self.assertEqual(manager.send_report('MisterZine report v1\n', '0.1.0-beta.9', ok), 'K7M4')
+        self.assertEqual(seen['body'], b'MisterZine report v1\n')
+        self.assertEqual(seen['type'], 'text/plain; charset=utf-8')
+
+        def busy(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 429, 'busy', {}, None)
+        with self.assertRaisesRegex(manager.ReportError, 'Too many reports'):
+            manager.send_report('x', opener=busy)
+
+        def offline(req, timeout):
+            raise urllib.error.URLError('no route')
+        with self.assertRaisesRegex(manager.ReportError, 'offline'):
+            manager.send_report('x', opener=offline)
+        with self.assertRaisesRegex(manager.ReportError, 'no code'):
+            manager.send_report('x', opener=lambda req, timeout: Answer(b'{"code":"0O"}'))
+
+    def test_diagnostics_saves_the_report_without_uploading(self):
+        with mock.patch.object(manager, 'build_report', return_value='MisterZine report v1\nApp: x\n'):
+            out, code, problem = manager.diagnostics(self.root, upload=False)
+        self.assertEqual(out, self.root / 'report.txt')
+        self.assertEqual(out.read_text(), 'MisterZine report v1\nApp: x\n')
+        self.assertEqual((code, problem), ('', ''))
+
+    def test_framebuffer_preparation_reports_a_write(self):
+        params = self.base / 'params'
+        params.mkdir()
+        (params / 'mode').write_text('8888 1 640 480 2560\n')
+        self.assertTrue(manager.prepare_framebuffer(params))
+        self.assertFalse(manager.prepare_framebuffer(params))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -69,8 +69,13 @@ func TestSignOutLabelUsesAccount(t *testing.T) {
 		{"", "stale name", "Sign out"},
 	} {
 		o := &Options{app: &App{Cfg: &Config{Token: tc.token, AccountName: tc.name, ServerName: "Movie Server"}}}
-		items := o.items()
-		if got := items[len(items)-3].label; got != tc.want {
+		got := ""
+		for _, it := range o.items() {
+			if strings.HasPrefix(it.label, "Sign out") {
+				got = it.label
+			}
+		}
+		if got != tc.want {
 			t.Fatalf("got %q, want %q", got, tc.want)
 		}
 	}

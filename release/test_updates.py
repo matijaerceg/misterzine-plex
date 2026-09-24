@@ -414,12 +414,15 @@ class UpdateTests(unittest.TestCase):
         (self.root / 'updates').mkdir()
         (self.root / 'updates/download-output.log').write_text('first\ncurl: (6) Could not resolve host https://raw.example.org/db.json.zip\n')
         (self.root / 'updates/downloader.log').write_text('first\nDownloader 2.0 https://example.org/x\n')
-        with contextlib.redirect_stdout(io.StringIO()):
-            manager.diagnostics(self.root)
-        report = json.loads((self.root / 'diagnostics.json').read_text())
-        self.assertIn('Could not resolve host [server address removed]', report['logs']['download-output.log'])
-        self.assertIn('Downloader 2.0 [server address removed]', report['logs']['downloader.log'])
-        self.assertIn('system', report)
+        out, code, problem = manager.diagnostics(self.root, upload=False)
+        report = out.read_text()
+        self.assertEqual(out, self.root / 'report.txt')
+        self.assertTrue(report.startswith(manager.REPORT_MAGIC + '\n'))
+        self.assertIn('== LOG download-output.log', report)
+        self.assertIn('Could not resolve host [server address removed]', report)
+        self.assertIn('Downloader 2.0 [server address removed]', report)
+        self.assertIn('== SYSTEM', report)
+        self.assertNotIn('example.org', report)
 
     def test_diagnostics_system_facts_stay_free_of_addresses(self):
         (self.card / 'MiSTer.ini').write_text('[MiSTer]\nvga_scaler=0 ; comment\nypbpr=1\nkey_menu_as_rgui=0\n'

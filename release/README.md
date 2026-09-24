@@ -61,8 +61,17 @@ It keeps your settings by default; removing all Plex data requires typing REMOVE
 
 ### Still stuck?
 
-[Report a problem](https://github.com/matijaerceg/misterzine-plex-core/issues/new?template=bug_report.yml)
+**Options > Send a report** in the app describes your MiSTer to the developer and
+shows a short code, such as `K7M4`, to post wherever you asked for help. The
+report holds the app and launcher logs, the video settings read from MiSTer.ini,
+which MiSTer main is running and the framebuffer state. It can name media titles
+and playback details; sign-in tokens, the server address and account files are
+never included. Reports go to `api.misterzine.fyi`, which keeps nothing about who
+sent them, and are deleted after 30 days. A copy is always saved as
+`/media/fat/misterzine-plex/report.txt`.
+
+If the app does not start, **MisterZine-Plex-Diagnostics** in MiSTer Menu writes
+and sends the same report and prints the code. If the MiSTer is offline, attach the
+saved file to a [problem report](https://github.com/matijaerceg/misterzine-plex-core/issues/new?template=bug_report.yml)
 with the version from Options, your MiSTer model, display connection and what
-happened. If needed, **MisterZine-Plex-Diagnostics** writes a diagnostics file in
-`/media/fat/misterzine-plex/`. Run it from MiSTer Menu and review the file before
-sharing; it can contain media titles. Don't share account files, tokens or member codes.
+happened. Don't share account files, tokens or member codes.

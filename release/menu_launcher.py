@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -48,6 +49,12 @@ def main():
                             continue
                     if name.read_text().strip() not in SELECTIONS or not (root / 'active.json').is_file():
                         continue
+                    # Keep the previous attempt: a launch that bounces and starts
+                    # again would otherwise erase the log that explains it.
+                    try:
+                        os.replace('/tmp/misterzine-plex-menu-run.log', '/tmp/misterzine-plex-menu-run.log.1')
+                    except OSError:
+                        pass
                     with open('/tmp/misterzine-plex-menu-run.log', 'wb') as log:
                         child = subprocess.Popen([sys.executable, str(root / 'manager.py'), 'run', '--card', str(card)],
                             stdin=subprocess.DEVNULL, stdout=log, stderr=log)

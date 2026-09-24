@@ -113,6 +113,7 @@ func (o *Options) items() []option {
 		updateLabel = "Updates - downloaded, restart to install"
 	}
 	items = append(items, option{label: updateLabel, do: func() { o.app.Push(NewUpdates(o.app)) }})
+	items = append(items, option{label: "Send a report", do: func() { o.app.Push(NewReport(o.app)) }})
 	items = append(items, option{label: "Version", val: func() string {
 		if o.app.Version == "" {
 			return "development"

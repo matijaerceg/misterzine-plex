@@ -32,6 +32,14 @@ SCRIPTS = {'Rollback': 'rollback', 'Diagnostics': 'diagnostics', 'Uninstall': 'u
 HELPERS = ('manager.py', 'update_service.py', 'catalogue.py', 'menu_launcher.py')
 BOOT_START = '# BEGIN MISTERZINE PLEX LAUNCHER'
 BOOT_END = '# END MISTERZINE PLEX LAUNCHER'
+# Reports go to the same service the MisterZine Frontend uses: a plain-text
+# upload answered with a short code, kept 30 days, nothing stored about the
+# sender. '' switches sending off.
+REPORT_SERVICE = 'https://api.misterzine.fyi'
+REPORT_MAGIC = 'MisterZine report v1'
+REPORT_MAX_BYTES = 256 * 1024
+REPORT_LOGS = ('misterzine-plex-menu-run.log', 'misterzine-plex-menu-run.log.1', 'misterzine-plex.log',
+               'misterzine-plex.log.1', 'misterzine-plex-menu.log', 'plexplay.log')
 
 
 LEGACY_ENTRY = b'<mistergamedescription>\n  <rbf>menu</rbf>\n  <setname>misterzine-plex</setname>\n</mistergamedescription>\n'
@@ -313,7 +321,7 @@ def safe_log(text, secrets):
 
 VIDEO_KEYS = ('main', 'direct_video', 'vga_scaler', 'forced_scandoubler', 'ypbpr', 'composite_sync', 'vga_sog',
               'vsync_adjust', 'vscale_mode', 'vscale_border', 'video_mode', 'video_mode_ntsc', 'video_mode_pal',
-              'menu_pal', 'hdmi_limited', 'vrr_mode')
+              'menu_pal', 'hdmi_limited', 'vrr_mode', 'fb_terminal')
 
 
 def ini_video_settings(text):
@@ -344,7 +352,7 @@ def system_facts(root, secrets, proc_root=Path('/proc')):
     except OSError:
         pass
     try:
-        names = set()
+        names, binaries = set(), set()
         for proc in proc_root.iterdir():
             try:
                 name = (proc / 'comm').read_bytes().decode('utf-8', errors='replace').strip() if proc.name.isdigit() else ''
@@ -352,13 +360,22 @@ def system_facts(root, secrets, proc_root=Path('/proc')):
                 continue
             if name.startswith('MiSTer'):
                 names.add(name)
+                # Which main this is: the path it runs from and the hash of that
+                # file, since a fork shares its name with stock main.
+                try:
+                    exe = Path(os.readlink(proc / 'exe'))
+                    binaries.add('%s %s %d %s' % (name, exe, exe.stat().st_size, digest(exe)[:16]))
+                except OSError:
+                    pass
         facts['main_processes'] = sorted(names)
+        facts['main_binaries'] = sorted(binaries)
     except OSError:
         pass
     try:
         startup = (card / 'linux/user-startup.sh').read_text(errors='replace')
         facts['startup_hooks'] = sorted({word for word in ('misterzine-plex', 'zaparoo', 'tapto', 'remote.sh')
                                          if word in startup})
+        facts['startup_sha256'] = hashlib.sha256(startup.encode()).hexdigest()[:16]
     except OSError:
         pass
     try:
@@ -394,36 +411,108 @@ def system_facts(root, secrets, proc_root=Path('/proc')):
     return facts
 
 
-def diagnostics(root):
+def report_secrets(root):
+    """Values that must never leave the card, read only to redact them."""
     secrets = []
-    # Read only to redact; never copy account files into a report.
     for path in (root / 'plexcrt.json', root / 'plexcrt.json.bak'):
         try:
             cfg = json.loads(path.read_text())
             secrets += [cfg.get(k, '') for k in ('token', 'server_token', 'server_url', 'server_name', 'client_id')]
         except (OSError, ValueError):
             pass
+    return secrets
+
+
+def report_version(root):
+    try:
+        state = read_state(root)
+        manifest = json.loads((root / 'releases' / state['current'] / 'manifest.json').read_text())
+        return str(manifest.get('version') or state['current'])[:40]
+    except (OSError, ValueError, KeyError, TypeError):
+        return 'unknown'
+
+
+def log_tail(path, limit):
+    """The last `limit` bytes of a log, minus a possibly cut first line."""
+    with path.open('rb') as src:
+        src.seek(max(0, path.stat().st_size - limit))
+        data = src.read().decode('utf-8', errors='replace')
+        if src.tell() > limit:
+            data = data.partition('\n')[2]
+    return data
+
+
+def build_report(root, proc_root=Path('/proc'), tmp=Path('/tmp'), now=None):
+    """The plain-text report the service takes: what the app, the launcher and
+    the board say, redacted, within REPORT_MAX_BYTES. Longer logs lose their
+    oldest lines first."""
+    secrets = report_secrets(root)
     try:
         state = read_state(root)
     except (OSError, ValueError):
         # An installation that never completed still deserves a report.
         state = None
-    report = {'release': state, 'kernel': os.uname().release, 'system': system_facts(root, secrets), 'logs': {}}
-    logs = {name: Path('/tmp') / name for name in ('misterzine-plex.log', 'plexplay.log')}
-    for name in ('last-error.log', 'download-output.log', 'downloader.log'):
-        logs[name] = root / 'updates' / name
-    for name, path in logs.items():
-        if path.is_file():
-            with path.open('rb') as src:
-                src.seek(max(0, path.stat().st_size - 64 * 1024))
-                data = src.read().decode('utf-8', errors='replace')
-                # Drop a potentially truncated initial credential-bearing line.
-                data = data.partition('\n')[2]
-            report['logs'][name] = safe_log(data, secrets)
-    out = root / 'diagnostics.json'
-    write_json(out, report)
-    print('Report: ' + str(out))
-    print('Review before sharing: media titles and playback details may appear. Account files are excluded.')
+    facts = system_facts(root, secrets, proc_root)
+    logs = [(name, tmp / name) for name in REPORT_LOGS]
+    logs += [(name, root / 'updates' / name) for name in ('last-error.log', 'download-output.log', 'downloader.log')]
+    logs = [(name, path) for name, path in logs if path.is_file()]
+    created = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))
+    limit = 64 * 1024
+    while True:
+        lines = [REPORT_MAGIC, 'App: MisterZine Plex Core ' + report_version(root), 'Created: ' + created, '', '== SYSTEM',
+                 'kernel: ' + os.uname().release, 'release: ' + json.dumps(state)]
+        for key, value in facts.items():
+            lines.append(safe_log(key + ': ' + json.dumps(value, sort_keys=True), secrets))
+        for name, path in logs:
+            lines += ['', '== LOG ' + name + ' (' + time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(path.stat().st_mtime)) + ')']
+            lines.append(safe_log(log_tail(path, limit), secrets).rstrip('\n'))
+        text = '\n'.join(lines) + '\n'
+        if len(text.encode()) <= REPORT_MAX_BYTES or limit <= 1024:
+            return text
+        limit //= 2
+
+
+class ReportError(RuntimeError):
+    """A failed upload, worded for the screen."""
+
+
+def send_report(text, version='unknown', opener=None):
+    """POST the report; the code the service filed it under."""
+    if not REPORT_SERVICE:
+        raise ReportError('Sending reports is switched off in this build.')
+    import urllib.error
+    req = urllib.request.Request(REPORT_SERVICE + '/reports', data=text.encode(), method='POST',
+                                 headers={'Content-Type': 'text/plain; charset=utf-8',
+                                          'User-Agent': 'MisterZine-Plex-Core/' + version})
+    try:
+        with (opener or urllib.request.urlopen)(req, timeout=20) as response:
+            answer = response.read(4096)
+    except urllib.error.HTTPError as exc:
+        raise ReportError({413: 'The report is too large to send.', 429: 'Too many reports at once; try again in a minute.',
+                           503: 'The report service is switched off.'}.get(exc.code, 'The report service answered HTTP %d.' % exc.code))
+    except (urllib.error.URLError, OSError, ValueError):
+        raise ReportError('The MiSTer seems to be offline, or the report service did not answer.')
+    try:
+        code = str(json.loads(answer.decode('utf-8', errors='replace')).get('code', ''))
+    except (ValueError, AttributeError):
+        code = ''
+    if not re.fullmatch(r'[0-9A-HJKMNP-TV-Z]{4,8}', code):
+        raise ReportError('The report service gave no code.')
+    return code
+
+
+def diagnostics(root, upload=True):
+    """Write the report beside the app and send it. Returns (path, code, problem):
+    code is '' when the upload did not happen and problem then says why."""
+    text = build_report(root)
+    out = root / 'report.txt'
+    atomic(out, text.encode())
+    if not upload:
+        return out, '', ''
+    try:
+        return out, send_report(text, report_version(root)), ''
+    except ReportError as exc:
+        return out, '', str(exc)
 
 
 def stop_child(child):
@@ -496,6 +585,8 @@ def prepare_framebuffer(parameters=Path('/sys/module/MiSTer_fb/parameters')):
     fmt, rb, width, height, stride = values
     if fmt != 8888 or stride * height < 0x7e0000:
         mode.write_text('8888 1 1920 1080 7680\n')
+        return True
+    return False
 
 
 def mister_processes(proc_root=Path('/proc')):
@@ -586,6 +677,27 @@ def recover_activation(root):
     return True
 
 
+def rotate_log(path):
+    """Keep the previous run's log as `.1`: a launch that bounces and starts
+    again must not erase the evidence of its first attempt."""
+    try:
+        os.replace(path, str(path) + '.1')
+    except OSError:
+        pass
+
+
+def trace(message):
+    """One timestamped line of the launch story, into the menu-run log."""
+    print(time.strftime('%H:%M:%S') + ' launch: ' + message, flush=True)
+
+
+def fb_mode(parameters=Path('/sys/module/MiSTer_fb/parameters')):
+    try:
+        return (parameters / 'mode').read_text().strip()
+    except OSError:
+        return '?'
+
+
 def run(root):
     recover_activation(root)
     state = read_state(root)
@@ -594,10 +706,18 @@ def run(root):
             '-cache', str(root / 'cache'), '-ffmpeg', str(root / 'ffmpeg')]
     subprocess.run(args + ['-check'], check=True)
     core = core_file(root, folder)
+    try:
+        corename = Path('/tmp/CORENAME').read_text().strip()
+    except OSError:
+        corename = '?'
+    mains = mister_processes()
+    trace('release %s, CORENAME %r, main %s' % (state['current'], corename,
+          ', '.join(sorted('%d:%s' % (pid, arg.decode(errors='replace')) for pid, arg in mains.items())) or 'none'))
+    started = time.monotonic()
     if core_loaded(core):
-        print('Core already loaded by the menu entry', flush=True)
+        trace('core already loaded by the menu entry (%.1f s)' % (time.monotonic() - started))
     else:
-        print('Loading core', flush=True)
+        trace('core not detected after %.1f s; loading it' % (time.monotonic() - started))
         entry = core_launch_entry(root, folder)
         before = mister_processes()
         with open('/dev/MiSTer_cmd', 'w') as cmd:
@@ -607,12 +727,15 @@ def run(root):
         deadline = time.monotonic() + 10
         while not selected_core(core, before=before):
             if time.monotonic() > deadline:
+                trace('no new main process running the core within 10 s')
                 raise RuntimeError('MiSTer did not load the selected RBF. Reinstall the matching package.')
             time.sleep(.05)
+        trace('core loaded by a new main process (%.1f s)' % (time.monotonic() - started))
     # Keep a read-only watch on the core. Returning to Menu stops this app too.
     with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 4096, access=mmap.ACCESS_READ) as mem:
         last = struct.unpack_from('<I', mem, 0x40)[0]
-        deadline = time.monotonic() + 8
+        waited = time.monotonic()
+        deadline = waited + 8
         while time.monotonic() < deadline:
             time.sleep(0.1)
             field = struct.unpack_from('<I', mem, 0x40)[0]
@@ -621,11 +744,16 @@ def run(root):
                 break
             last = field
         else:
+            trace('core status %08x, field %d: no live Plex core within 8 s' % (status, field))
             raise RuntimeError('Plex core did not start. Reinstall the matching package and try again.')
-        prepare_framebuffer()
+        trace('core running (%.1f s), framebuffer mode %s' % (time.monotonic() - waited, fb_mode()))
+        if prepare_framebuffer():
+            trace('framebuffer mode written, now %s' % fb_mode())
         changed = time.monotonic()
+        rotate_log('/tmp/misterzine-plex.log')
         with open('/tmp/misterzine-plex.log', 'wb') as log:
             child = subprocess.Popen(args, stdout=log, stderr=log)
+            trace('app started, pid %d' % child.pid)
             def interrupted(signum, frame):
                 raise KeyboardInterrupt()
             signal.signal(signal.SIGTERM, interrupted)
@@ -635,11 +763,15 @@ def run(root):
                     field = struct.unpack_from('<I', mem, 0x40)[0]
                     status = struct.unpack_from('<I', mem, 0x6c)[0]
                     if status & 0xfffffff0 != 0x56500000:
+                        trace('core status changed to %08x; stopping the app' % status)
                         break
                     if field != last:
                         last, changed = field, time.monotonic()
                     elif time.monotonic() - changed > 2:
+                        trace('field counter stalled at %d for 2 s; stopping the app' % field)
                         break
+                if child.poll() is not None:
+                    trace('app exited with status %d after %.0f s' % (child.returncode, time.monotonic() - changed))
                 if child.poll() not in (None, 0):
                     raise RuntimeError('App could not start. Run MisterZine-Plex-Diagnostics and check the report.')
             finally:
@@ -649,13 +781,29 @@ def run(root):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['install', 'run', 'rollback', 'remove', 'diagnostics'])
+    parser.add_argument('action', choices=['install', 'run', 'rollback', 'remove', 'diagnostics', 'report'])
     parser.add_argument('--card', type=Path, default=Path('/media/fat'))
     parser.add_argument('--package', type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument('--decoder-archive', type=Path)
+    parser.add_argument('--no-upload', action='store_true', help='write the report without sending it')
     args = parser.parse_args()
     root = args.card / 'misterzine-plex'
     try:
+        if args.action in ('diagnostics', 'report'):
+            # Reading logs needs no lock, so a report can be sent from the running app.
+            out, code, problem = diagnostics(root, upload=not args.no_upload)
+            if args.action == 'report':
+                # Lines the app parses.
+                print('saved: ' + str(out))
+                print('code: ' + code if code else 'error: ' + problem, flush=True)
+                return 0
+            print('Report saved as ' + str(out))
+            if code:
+                print('Report sent. Post this code where you asked for help: ' + code)
+            elif problem:
+                print('Not sent: ' + problem + ' You can send the saved file instead.')
+            print('It can name media titles and playback details. Account files and tokens are never included.')
+            return 0 if code or args.no_upload else 1
         with locked(root):
             if args.action == 'install':
                 install(args.card, args.package, args.decoder_archive)
@@ -665,8 +813,6 @@ def main():
                 rollback(root)
             elif args.action == 'remove':
                 remove(args.card)
-            else:
-                diagnostics(root)
     except KeyboardInterrupt:
         return 0
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as exc:
