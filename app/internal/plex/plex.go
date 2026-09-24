@@ -24,6 +24,7 @@ type Client struct {
 	CacheDir string
 	ClientID string
 	http     *http.Client
+	slow     *http.Client // for the hub endpoints, which a large library answers slowly
 }
 
 // New makes a client; the token is never logged.
@@ -33,7 +34,8 @@ func New(host, token, cacheDir, clientID string) *Client {
 		clientID = "mister-plexcrt-0001"
 	}
 	return &Client{Host: host, Token: token, CacheDir: cacheDir, ClientID: clientID,
-		http: &http.Client{Timeout: 10 * time.Second}}
+		http: &http.Client{Timeout: 10 * time.Second},
+		slow: &http.Client{Timeout: 30 * time.Second}}
 }
 
 func (c *Client) req(path string, q url.Values) (*http.Request, error) {
@@ -55,11 +57,20 @@ func (c *Client) req(path string, q url.Values) (*http.Request, error) {
 
 // Get fetches a path and returns the body.
 func (c *Client) Get(path string, q url.Values) ([]byte, error) {
+	return c.fetch(c.http, path, q)
+}
+
+// getSlow is Get with the longer timeout of the hub endpoints.
+func (c *Client) getSlow(path string, q url.Values) ([]byte, error) {
+	return c.fetch(c.slow, path, q)
+}
+
+func (c *Client) fetch(cl *http.Client, path string, q url.Values) ([]byte, error) {
 	r, err := c.req(path, q)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(r)
+	resp, err := cl.Do(r)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +530,7 @@ func (c *Client) Item(ratingKey string) (*Item, error) {
 func (c *Client) Hubs(count int) ([]*Hub, error) {
 	q := url.Values{"count": {strconv.Itoa(count)}, "excludeFields": {"summary,tagline"},
 		"excludeElements": {"Genre,Director,Writer,Role,Country,Producer,Guid,Collection,Label,Field,UltraBlurColors"}}
-	data, err := c.Get("/hubs", q)
+	data, err := c.getSlow("/hubs", q)
 	if err != nil {
 		return nil, err
 	}
@@ -600,7 +611,7 @@ func mergeItems(a, b []*Item) []*Item {
 func (c *Client) SectionRecent(section string, count int) (*Hub, error) {
 	q := url.Values{"count": {strconv.Itoa(count)}, "excludeFields": {"summary,tagline"},
 		"excludeElements": {"Genre,Director,Writer,Role,Country,Producer,Guid,Collection,Label,Field,UltraBlurColors"}}
-	data, err := c.Get("/hubs/sections/"+section, q)
+	data, err := c.getSlow("/hubs/sections/"+section, q)
 	if err != nil {
 		return nil, err
 	}

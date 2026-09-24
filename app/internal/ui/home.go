@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"math"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -110,7 +113,7 @@ func (h *Home) focusSeason(i int) {
 // recently added, fetched together.
 func (h *Home) reload() {
 	h.refreshResult = nil // discard any older background request
-	hubs, err := fetchHome(h.app.Plex)
+	hubs, err := fetchHome(h.app.Plex, h.app.Log)
 	if err == nil {
 		h.app.measureHubs(hubs)
 	}
@@ -135,17 +138,24 @@ type homeResult struct {
 }
 
 // fetchHome owns its data; the worker never reads or changes screen state.
-func fetchHome(client *plex.Client) ([]*plex.Hub, error) {
-	hubs, err := client.Hubs(30)
-	if err != nil {
-		return nil, err
-	}
+// A row that fails is dropped and logged rather than failing the screen:
+// a large library answers /hubs slowly, and one broken library must not
+// hide the others. Only a server that answers nothing is an error.
+func fetchHome(client *plex.Client, lg *log.Logger) ([]*plex.Hub, error) {
+	var hubs []*plex.Hub
+	var hubsErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hubs, hubsErr = client.Hubs(30)
+	}()
 	secs, err := client.Sections()
 	if err != nil {
+		wg.Wait()
 		return nil, err
 	}
 	rows := make([]*plex.Hub, len(secs))
-	var wg sync.WaitGroup
 	errs := make([]error, len(secs))
 	for i, s := range secs {
 		wg.Add(1)
@@ -167,10 +177,19 @@ func fetchHome(client *plex.Client) ([]*plex.Hub, error) {
 		}(i, s)
 	}
 	wg.Wait()
-	for _, err := range errs {
+	if hubsErr != nil {
+		lg.Printf("home: continue watching skipped: %v", hubsErr)
+		hubs = nil
+	}
+	failed := 0
+	for i, err := range errs {
 		if err != nil {
-			return nil, err
+			failed++
+			lg.Printf("home: library %q skipped: %v", secs[i].Title, err)
 		}
+	}
+	if hubsErr != nil && len(secs) > 0 && failed == len(secs) {
+		return nil, errs[0]
 	}
 	for _, r := range rows {
 		if r != nil {
@@ -178,6 +197,24 @@ func fetchHome(client *plex.Client) ([]*plex.Hub, error) {
 		}
 	}
 	return hubs, nil
+}
+
+// shortErr is the error on one screen line: for a request, the path and
+// the cause rather than the whole URL.
+func shortErr(err error) string {
+	s := err.Error()
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		path := ue.URL
+		if u, perr := url.Parse(ue.URL); perr == nil {
+			path = u.Path
+		}
+		s = path + ": " + ue.Err.Error()
+	}
+	if len(s) > 70 {
+		s = s[:67] + "..."
+	}
+	return s
 }
 
 // pollHome runs on the render thread, including while the screen is idle.
@@ -208,9 +245,9 @@ func (h *Home) pollHome(now time.Time) {
 	}
 	result := make(chan homeResult, 1)
 	h.refreshResult = result
-	client := h.app.Plex
+	client, lg := h.app.Plex, h.app.Log
 	go func() {
-		hubs, err := fetchHome(client)
+		hubs, err := fetchHome(client, lg)
 		if err == nil {
 			h.app.measureHubs(hubs)
 		}
@@ -412,6 +449,7 @@ func (h *Home) Draw(c *gfx.Canvas, now time.Time) bool {
 		h.app.text(c, SafeX, SafeY+40, h.app.F.Body, gfx.GreyHi, "Cannot reach the server.")
 		h.app.text(c, SafeX, SafeY+70, h.app.F.Small, gfx.GreyLo, "Check the network and confirm your Plex server is running.")
 		h.app.text(c, SafeX, SafeY+110, h.app.F.Small, gfx.GreyLo, "OK: retry. Back: menu, then Options to choose a server.")
+		h.app.text(c, SafeX, SafeY+160, h.app.F.Small, gfx.GreyLo, shortErr(h.err))
 		return false
 	}
 	if h.empty {
