@@ -419,6 +419,24 @@ class UpdateTests(unittest.TestCase):
         report = json.loads((self.root / 'diagnostics.json').read_text())
         self.assertIn('Could not resolve host [server address removed]', report['logs']['download-output.log'])
         self.assertIn('Downloader 2.0 [server address removed]', report['logs']['downloader.log'])
+        self.assertIn('system', report)
+
+    def test_diagnostics_system_facts_stay_free_of_addresses(self):
+        (self.card / 'MiSTer.ini').write_text('[MiSTer]\nvga_scaler=0 ; comment\nypbpr=1\nkey_menu_as_rgui=0\n'
+                                              '[Menu]\ndirect_video=1\n[ao486]\nvga_scaler=1\n[MisterZine Plex Core]\nvsync_adjust=2\n')
+        (self.card / 'linux').mkdir()
+        (self.card / 'linux/user-startup.sh').write_text('#!/bin/bash\n/media/fat/Scripts/zaparoo.sh -service $1\n')
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / 'plexcrt.json').write_text(json.dumps({'server_url': 'https://192-168-1-9.abcdef.plex.direct:32400',
+                                                            'token': 'TEST-ONLY-token', 'bitrate': 3000}))
+        facts = manager.system_facts(self.root, ['TEST-ONLY-token'], proc_root=self.card / 'no-proc')
+        self.assertEqual(facts['video_settings'], {'MiSTer': {'vga_scaler': '0', 'ypbpr': '1'}, 'Menu': {'direct_video': '1'},
+                                                   'MisterZine Plex Core': {'vsync_adjust': '2'}})
+        self.assertEqual(facts['startup_hooks'], ['zaparoo'])
+        self.assertEqual(facts['server'], {'scheme': 'https', 'port': 32400, 'kind': 'plex.direct', 'private_lan': True,
+                                           'bitrate': 3000, 'progressive': None})
+        self.assertNotIn('192-168', json.dumps(facts))
+        self.assertNotIn('TEST-ONLY', json.dumps(facts))
 
     def test_publishing_database_owns_only_staging_and_installer_is_standalone(self):
         r, z, _ = self.release()

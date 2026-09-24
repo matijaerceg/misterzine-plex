@@ -32,6 +32,11 @@ Robustness:
   - if ffmpeg cannot open the stream at all (its own HTTP or TLS client failing
     against a server this script reaches fine), the stream is fetched here
     and piped into ffmpeg instead; PLEX_STREAM=pipe selects that from the start;
+  - the first time a pipeline ends without showing a frame, a few seconds of
+    self-test go into the log: how the server answers this script and ffmpeg,
+    and whether colour bars reach the screen through the presenter. That makes
+    one diagnostics report enough to place a black screen. PLEX_SELFTEST=1
+    runs it before playing.
   - stop/seek/end all shut the transcode session down; a seek leaves the
     last frame on screen until the new stream's first frame.
 """
@@ -143,6 +148,7 @@ class Player:
         self.p_ff = self.p_fb = None
         self.resp = None              # the stream response when fetched here
         self.pump = os.environ.get('PLEX_STREAM') == 'pipe'
+        self.tested = False           # self-test done for this play
         self.sess = None
         self.fps = 23.976
         self.paused = False
@@ -264,6 +270,96 @@ class Player:
             with open(PLAYSTAT + '.err', 'w') as f: f.write(text)
         except OSError: pass
 
+    # ---- self-test ----
+    def self_test(self):
+        """a few seconds of probes, each on its own, none fatal; ~6 s in all"""
+        self.tested = True
+        log('selftest: start')
+        try:
+            u = urllib.parse.urlsplit(HOST)
+            host = u.hostname or ''
+            kind = 'relay' if u.port == 8443 else 'plex.direct' if host.endswith('.plex.direct') else 'address'
+            private = bool(__import__('re').match(r'(10-|192-168-|172-(1[6-9]|2\d|3[01])-)', host)) if kind == 'plex.direct' else None
+            log('selftest: server %s %s port %s%s' % (u.scheme, kind, u.port or 'default',
+                {True: ' (private LAN address)', False: ' (public address)'}.get(private, '')))
+            t = time.time()
+            addrs = socket.getaddrinfo(host, u.port or 32400, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            fams = sorted({'IPv6' if a[0] == socket.AF_INET6 else 'IPv4' for a in addrs})
+            log('selftest: name resolves to %d address(es) %s in %.2f s' % (len(addrs), '/'.join(fams), time.time() - t))
+        except Exception as e:
+            log('selftest: name lookup failed: %r' % e)
+        results = {}
+        def probe(name, fn):
+            try: results[name] = fn()
+            except Exception as e: results[name] = 'failed: %r' % e
+        def py_identity():
+            t = time.time()
+            r = urllib.request.urlopen(urllib.request.Request(HOST + '/identity', headers=PLEX_HDRS), timeout=5)
+            return 'HTTP %d in %.2f s' % (r.status, time.time() - t)
+        def py_stream():
+            sess = str(uuid.uuid4())
+            params = {'path': '/library/metadata/%s' % self.rk, 'mediaIndex': 0, 'partIndex': 0,
+                      'protocol': 'http', 'directPlay': 0, 'directStream': 0, 'videoResolution': '720x480',
+                      'maxVideoBitrate': BITRATE, 'videoQuality': 100, 'subtitles': 'burn',
+                      'session': sess, 'X-Plex-Session-Identifier': sess, 'copyts': 1, 'offset': 0,
+                      'fastSeek': 1, 'location': 'wan', 'mediaBufferSize': 12288, 'hasMDE': 1}
+            try:
+                get('/video/:/transcode/universal/decision', params, timeout=5)
+                t = time.time()
+                r = urllib.request.urlopen(urllib.request.Request(
+                    HOST + '/video/:/transcode/universal/start.mkv?' + urllib.parse.urlencode(params),
+                    headers=PLEX_HDRS), timeout=5)
+                n, first = 0, None
+                while time.time() - t < 4 and n < 512 * 1024:
+                    chunk = r.read(65536)
+                    if not chunk: break
+                    if first is None: first = chunk[:4]
+                    n += len(chunk)
+                r.close()
+                return 'HTTP %d %s, %d bytes in %.1f s, %s' % (r.status, r.headers.get('Content-Type', '?'), n, time.time() - t,
+                    'matroska' if first == b'\x1a\x45\xdf\xa3' else 'not matroska (%r)' % first)
+            except urllib.error.HTTPError as e:
+                body = ''
+                try: body = e.read(200).decode('utf-8', 'replace').replace('\n', ' ').strip()
+                except Exception: pass
+                return 'HTTP %d %s %s' % (e.code, e.reason, body)
+            finally:
+                try: get('/video/:/transcode/universal/stop', {'session': sess}, timeout=5)
+                except Exception: pass
+        def ff_http():
+            r = subprocess.run([FF, '-v', 'error', '-rw_timeout', '5000000', '-headers', 'X-Plex-Token: ' + TOKEN + '\r\n',
+                                '-i', HOST + '/identity', '-f', 'null', '-'], capture_output=True, timeout=12)
+            err = r.stderr.decode('utf-8', 'replace').strip().splitlines()
+            # /identity is XML, so the demuxer complaint means the bytes arrived
+            if any('Invalid data found' in line for line in err): return 'reached the server (rc=%d)' % r.returncode
+            return 'rc=%d %s' % (r.returncode, ' | '.join(line[:120] for line in err[:3]))
+        def bars():
+            try: os.unlink(STATUS)
+            except OSError: pass
+            ff = subprocess.Popen([FF, '-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=720x480:rate=30',
+                                   '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '2',
+                                   '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p', '-ac', '2', '-c:a', 'pcm_s16le',
+                                   '-f', 'avi', 'pipe:1'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            fb = subprocess.Popen([PLEXFB, 'avi', '29.97'], stdin=ff.stdout,
+                                  env=dict(os.environ, PLEXFB_DEV='/dev/fb0', PLEXFB_STATUS=STATUS))
+            ff.stdout.close()
+            try: fb.wait(timeout=8)
+            except subprocess.TimeoutExpired: fb.terminate(); fb.wait()
+            err = ff.stderr.read().decode('utf-8', 'replace').strip()
+            ff.wait()
+            st = read_status()
+            return 'shown=%s filled=%s starved=%s presenter rc=%s%s' % (
+                int(st.get('shown', 0)), int(st.get('filled', 0)), int(st.get('starved', 0)), fb.returncode,
+                ' ffmpeg: ' + err[:120] if err else '')
+        threads = [threading.Thread(target=probe, args=a, daemon=True) for a in (
+            ('this script, /identity', py_identity), ('this script, stream', py_stream), ('ffmpeg, /identity', ff_http))]
+        for t in threads: t.start()
+        probe('colour bars through the presenter', bars)
+        for t in threads: t.join(8)
+        for name in ('this script, /identity', 'this script, stream', 'ffmpeg, /identity', 'colour bars through the presenter'):
+            log('selftest: %s: %s' % (name, results.get(name, 'no answer in time')))
+        log('selftest: done')
+
     def kill(self):
         # ffmpeg first, so it is gone before its pipe closes and does not log
         # a screenful of broken-pipe errors; plexfb blanks the screen on SIGTERM
@@ -366,6 +462,8 @@ class Player:
 
         retries = 0
         log('playing: %s, %.0f min' % (self.title, self.duration / 60))
+        if os.environ.get('PLEX_SELFTEST'):
+            self.self_test()
         try: os.unlink(PLAYSTAT + '.err')
         except OSError: pass
         while True:
@@ -403,6 +501,11 @@ class Player:
                 self.offset = pend[1]; retries = 0; continue
             if s.get('eof') == 1 and out_pos >= self.duration - END_SLACK:
                 log('end of stream at %.1f s' % out_pos); break
+            if not s.get('shown') and not self.tested:
+                self.self_test()
+                with self.lock: pend = self.pending
+                if pend == 'stop':
+                    log('stopped at %.1f s' % out_pos); break
             if not self.pump and not s.get('shown') and self.p_ff.returncode not in (None, 0):
                 # ffmpeg never got a frame out of the URL. Its HTTP client is not
                 # the one that reached the server a moment ago; use that one.

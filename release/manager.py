@@ -311,6 +311,82 @@ def safe_log(text, secrets):
     return text
 
 
+VIDEO_KEYS = ('main', 'direct_video', 'vga_scaler', 'forced_scandoubler', 'ypbpr', 'composite_sync', 'vga_sog',
+              'vsync_adjust', 'vscale_mode', 'vscale_border', 'video_mode', 'video_mode_ntsc', 'video_mode_pal',
+              'menu_pal', 'hdmi_limited', 'vrr_mode')
+
+
+def ini_video_settings(text):
+    """Video-related keys of MiSTer.ini by section: the global ones and any
+    section that names this core. Values only; no paths or names beyond that."""
+    found, section = {}, 'MiSTer'
+    for line in text.splitlines():
+        line = line.split(';', 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].strip()
+            continue
+        key, sep, value = line.partition('=')
+        key = key.strip().lower()
+        if sep and key in VIDEO_KEYS and (section.lower() in ('mister', 'menu') or 'plex' in section.lower()):
+            found.setdefault(section, {})[key] = value.strip()[:40]
+    return found
+
+
+def system_facts(root, secrets, proc_root=Path('/proc')):
+    """Facts about the board that decide whether a launch or a picture can
+    work, gathered read-only. Each is best-effort and absent when unreadable."""
+    facts = {}
+    card = root.parent
+    try:
+        facts['video_settings'] = ini_video_settings((card / 'MiSTer.ini').read_text(errors='replace'))
+    except OSError:
+        pass
+    try:
+        facts['main_processes'] = sorted({(p / 'comm').read_text().strip() for p in proc_root.iterdir()
+                                          if p.name.isdigit() and (p / 'comm').read_text().strip().startswith('MiSTer')})
+    except OSError:
+        pass
+    try:
+        startup = (card / 'linux/user-startup.sh').read_text(errors='replace')
+        facts['startup_hooks'] = sorted({word for word in ('misterzine-plex', 'zaparoo', 'tapto', 'remote.sh')
+                                         if word in startup})
+    except OSError:
+        pass
+    try:
+        facts['framebuffer_mode'] = Path('/sys/module/MiSTer_fb/parameters/mode').read_text().strip()
+    except OSError:
+        pass
+    try:
+        cfg = json.loads((root / 'plexcrt.json').read_text())
+        url = cfg.get('server_url', '')
+        import urllib.parse
+        u = urllib.parse.urlsplit(url)
+        host = u.hostname or ''
+        facts['server'] = {'scheme': u.scheme, 'port': u.port,
+                           'kind': 'relay' if u.port == 8443 else 'plex.direct' if host.endswith('.plex.direct') else 'address',
+                           'private_lan': bool(re.match(r'(10-|192-168-|172-(1[6-9]|2\d|3[01])-)', host)) if host.endswith('.plex.direct') else None,
+                           'bitrate': cfg.get('bitrate'), 'progressive': cfg.get('progressive')}
+    except (OSError, ValueError):
+        pass
+    try:
+        state = read_state(root)
+        folder = root / 'releases' / state['current']
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        facts['payload_intact'] = all((folder / name).is_file() and digest(folder / name) == sha
+                                      for name, sha in manifest['files'].items())
+        facts['decoder_present'] = (root / 'ffmpeg').is_file() and os.access(root / 'ffmpeg', os.X_OK)
+    except (OSError, ValueError, KeyError):
+        pass
+    for name in ('plexfb.stat', 'plexplay.stat.err'):
+        try:
+            facts[name] = safe_log(Path('/tmp', name).read_text(errors='replace').strip()[:300], secrets)
+        except OSError:
+            pass
+    return facts
+
+
 def diagnostics(root):
     secrets = []
     # Read only to redact; never copy account files into a report.
@@ -325,7 +401,7 @@ def diagnostics(root):
     except (OSError, ValueError):
         # An installation that never completed still deserves a report.
         state = None
-    report = {'release': state, 'kernel': os.uname().release, 'logs': {}}
+    report = {'release': state, 'kernel': os.uname().release, 'system': system_facts(root, secrets), 'logs': {}}
     logs = {name: Path('/tmp') / name for name in ('misterzine-plex.log', 'plexplay.log')}
     for name in ('last-error.log', 'download-output.log', 'downloader.log'):
         logs[name] = root / 'updates' / name
