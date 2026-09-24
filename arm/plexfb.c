@@ -339,10 +339,19 @@ static void present_loop(double fps, uint32_t seq)
  * has caught up to it, so the audio position follows the field counter and does
  * not depend on how far ahead the source interleaved its audio (Plex sends it
  * about a second early, which is what put the sound ahead of the picture).
+ * An empty video chunk (ffmpeg holding a frame over a timestamp gap) repeats
+ * the previous frame, so every chunk is one frame of picture time.
  *
  *   PLEXFB_ALEAD  seconds of audio kept queued ahead of the picture (default 0.10,
  *                 roughly aplay's buffer so it never runs dry)
  *   PLEXFB_AOFF   extra audio delay in seconds, positive = later (default 0)
+ *   PLEXFB_ACATCH how far the released audio may fall behind the picture before
+ *                 the queued audio up to the picture is dropped (default 0.15)
+ *
+ * The gate alone only holds audio back. A stall that keeps the audio from
+ * aplay for a while (a late wakeup, a blocked write) would leave every later
+ * sample that much behind the picture until the next seek, so audio that has
+ * fallen behind is dropped instead: one short skip, then in sync again.
  */
 #define AFIFO_BYTES (48000 * 4 * 8)          /* 8 s of S16 stereo */
 #define ABPS        (48000.0 * 4)
@@ -350,6 +359,7 @@ static uint8_t *afifo;
 static volatile size_t a_w = 0, a_r = 0;     /* monotonic byte counters */
 static double g_alead = 0.10, g_aoff = 0.0;    /* 0: a ball-and-wall clip on the CRT lands the beep on the hit
                                                   (the old 80 ms was measured before the ring_base fix) */
+static double g_acatch = 0.15;
 static FILE *aplay;
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -406,18 +416,30 @@ static void *avi_reader(void *arg)
 			continue;
 		}
 		if (!memcmp(ch, "00dc", 4)) {
-			if (sz != vneed) {
-				if (sz && bad++ < 3) fprintf(stderr, "plexfb: video chunk %u bytes, expected %u\n", sz, (unsigned)vneed);
+			if (sz && sz != vneed) {
+				if (bad++ < 3) fprintf(stderr, "plexfb: video chunk %u bytes, expected %u\n", sz, (unsigned)vneed);
 				if (!skip_bytes(padded)) break;
 				continue;
 			}
 			while (ring_filled - ring_shown >= RING - 2) usleep(500);
 			uint8_t *dst = ram_slot(ring_filled % RING);
-			double a = now();
-			if (!read_full(dst, sz)) break;
-			if (sz & 1) skip_bytes(1);
-			stat_read_ms += (now() - a) * 1e3;
-			memcpy(map + BUF_OFF(ring_filled % RING), dst, sz);
+			if (!sz) {
+				/* an empty chunk is ffmpeg holding the frame over a gap in the
+				   source's timestamps: show the last frame (black before the
+				   first) for its slot, or the picture runs ahead of the sound */
+				if (ring_filled != ring_base)
+					memcpy(dst, ram_slot((ring_filled - 1) % RING), vneed);
+				else {
+					memset(dst, 16, W * H);
+					memset(dst + W * H, 128, W * H / 2);
+				}
+			} else {
+				double a = now();
+				if (!read_full(dst, sz)) break;
+				if (sz & 1) skip_bytes(1);
+				stat_read_ms += (now() - a) * 1e3;
+			}
+			memcpy(map + BUF_OFF(ring_filled % RING), dst, vneed);
 			__sync_synchronize();
 			ring_filled++;
 		}
@@ -458,6 +480,16 @@ static void *audio_thread(void *arg)
 		}
 		if (g_quit || (ring_eof && a_r >= a_w)) break;
 		int drain = ring_eof && ring_filled == ring_shown;   /* picture over: let the tail out */
+		if (!drain && a_w > a_r && ta < tv - g_aoff - g_acatch) {
+			/* behind the picture: drop what is queued up to it, whole frames only */
+			size_t to = (size_t)((tv - g_aoff) * ABPS) & ~(size_t)3;
+			if (to > a_w) to = a_w;
+			fprintf(stderr, "plexfb: audio %.2f s behind the picture at %.1f s, skipped ahead\n",
+			        tv - g_aoff - ta, tv);
+			__sync_synchronize();
+			a_r = to;
+			continue;
+		}
 		if (a_w == a_r || (!drain && ta > tv + g_alead - g_aoff)) { usleep(2000); continue; }
 		size_t c = a_w - a_r;
 		if (c > 3840) c = 3840;                   /* 20 ms slices */
@@ -540,6 +572,7 @@ int main(int argc, char **argv)
 		g_yuv = 1;
 		if (getenv("PLEXFB_ALEAD")) g_alead = atof(getenv("PLEXFB_ALEAD"));
 		if (getenv("PLEXFB_AOFF"))  g_aoff  = atof(getenv("PLEXFB_AOFF"));
+		if (getenv("PLEXFB_ACATCH")) g_acatch = atof(getenv("PLEXFB_ACATCH"));
 		if (fcntl(0, F_SETPIPE_SZ, 4 << 20) < 0) perror("F_SETPIPE_SZ (ignored)");
 		signal(SIGUSR1, on_usr1);
 		signal(SIGUSR2, on_usr2);
