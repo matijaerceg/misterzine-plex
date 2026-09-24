@@ -33,7 +33,7 @@ checking the output profile guard and verifying on appropriate hardware.
 ```sh
 arm-linux-gnueabihf-gcc -O2 -static -march=armv7-a -mfpu=neon -mfloat-abi=hard -pthread -o arm/plexfb arm/plexfb.c -lm
 cp core/output_files/PlexCRT.rbf core/PlexCRT.rbf
-python3 release/build_package.py --core-tree core --id source-build --version 0.1.0-beta.3
+python3 release/build_package.py --core-tree core --id source-build --version 0.1.0-beta.4
 ```
 
 The packaged presenter uses glibc; preserve its LGPL terms and relinking/source
