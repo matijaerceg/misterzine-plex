@@ -77,10 +77,13 @@ PLEX_HDRS = {
     'Accept': 'application/xml',
 }
 
+HOSTNAME = urllib.parse.urlsplit(HOST).hostname or ''
+
 def safe_text(value):
     text = str(value)
     for secret in (TOKEN, urllib.parse.quote(TOKEN, safe=''), urllib.parse.quote_plus(TOKEN)):
         if secret: text = text.replace(secret, '[redacted]')
+    if HOSTNAME: text = text.replace(HOSTNAME, '[server]')
     return text
 
 def log(*a):
@@ -149,6 +152,7 @@ class Player:
         self.resp = None              # the stream response when fetched here
         self.pump = os.environ.get('PLEX_STREAM') == 'pipe'
         self.tested = False           # self-test done for this play
+        self.probes = []              # self-test children, ended by a stop
         self.sess = None
         self.fps = 23.976
         self.paused = False
@@ -271,11 +275,21 @@ class Player:
         except OSError: pass
 
     # ---- self-test ----
+    def stopping(self):
+        with self.lock: return self.pending == 'stop'
+
     def self_test(self):
-        """a few seconds of probes, each on its own, none fatal; ~6 s in all"""
+        """a few seconds of probes, each on its own, none fatal, all bounded;
+        a stop ends the children at once and the rest within the deadline"""
         self.tested = True
+        deadline = time.time() + 8
         log('selftest: start')
-        try:
+        self.end_session()            # the failed session; a retry opens a new one
+        results = {}
+        def probe(name, fn):
+            try: results[name] = fn()
+            except Exception as e: results[name] = 'failed: %r' % e
+        def lookup():
             u = urllib.parse.urlsplit(HOST)
             host = u.hostname or ''
             kind = 'relay' if u.port == 8443 else 'plex.direct' if host.endswith('.plex.direct') else 'address'
@@ -285,13 +299,7 @@ class Player:
             t = time.time()
             addrs = socket.getaddrinfo(host, u.port or 32400, socket.AF_UNSPEC, socket.SOCK_STREAM)
             fams = sorted({'IPv6' if a[0] == socket.AF_INET6 else 'IPv4' for a in addrs})
-            log('selftest: name resolves to %d address(es) %s in %.2f s' % (len(addrs), '/'.join(fams), time.time() - t))
-        except Exception as e:
-            log('selftest: name lookup failed: %r' % e)
-        results = {}
-        def probe(name, fn):
-            try: results[name] = fn()
-            except Exception as e: results[name] = 'failed: %r' % e
+            return '%d address(es) %s in %.2f s' % (len(addrs), '/'.join(fams), time.time() - t)
         def py_identity():
             t = time.time()
             r = urllib.request.urlopen(urllib.request.Request(HOST + '/identity', headers=PLEX_HDRS), timeout=5)
@@ -309,8 +317,9 @@ class Player:
                 r = urllib.request.urlopen(urllib.request.Request(
                     HOST + '/video/:/transcode/universal/start.mkv?' + urllib.parse.urlencode(params),
                     headers=PLEX_HDRS), timeout=5)
+                self.probes.append(r)
                 n, first = 0, None
-                while time.time() - t < 4 and n < 512 * 1024:
+                while time.time() - t < 4 and n < 512 * 1024 and not self.stopping():
                     chunk = r.read(65536)
                     if not chunk: break
                     if first is None: first = chunk[:4]
@@ -327,9 +336,14 @@ class Player:
                 try: get('/video/:/transcode/universal/stop', {'session': sess}, timeout=5)
                 except Exception: pass
         def ff_http():
-            r = subprocess.run([FF, '-v', 'error', '-rw_timeout', '5000000', '-headers', 'X-Plex-Token: ' + TOKEN + '\r\n',
-                                '-i', HOST + '/identity', '-f', 'null', '-'], capture_output=True, timeout=12)
-            err = r.stderr.decode('utf-8', 'replace').strip().splitlines()
+            r = subprocess.Popen([FF, '-v', 'error', '-rw_timeout', '5000000', '-headers', 'X-Plex-Token: ' + TOKEN + '\r\n',
+                                  '-i', HOST + '/identity', '-f', 'null', '-'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self.probes.append(r)
+            try: _, err = r.communicate(timeout=7)
+            except subprocess.TimeoutExpired:
+                r.kill(); _, err = r.communicate()
+                return 'no answer in 7 s'
+            err = safe_text(err.decode('utf-8', 'replace')).strip().splitlines()
             # /identity is XML, so the demuxer complaint means the bytes arrived
             if any('Invalid data found' in line for line in err): return 'reached the server (rc=%d)' % r.returncode
             return 'rc=%d %s' % (r.returncode, ' | '.join(line[:120] for line in err[:3]))
@@ -342,23 +356,38 @@ class Player:
                                    '-f', 'avi', 'pipe:1'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             fb = subprocess.Popen([PLEXFB, 'avi', '29.97'], stdin=ff.stdout,
                                   env=dict(os.environ, PLEXFB_DEV='/dev/fb0', PLEXFB_STATUS=STATUS))
+            self.probes += [ff, fb]
             ff.stdout.close()
-            try: fb.wait(timeout=8)
-            except subprocess.TimeoutExpired: fb.terminate(); fb.wait()
+            for p in (fb, ff):
+                try: p.wait(timeout=max(0.5, deadline - time.time()))
+                except subprocess.TimeoutExpired:
+                    p.kill(); p.wait()
             err = ff.stderr.read().decode('utf-8', 'replace').strip()
-            ff.wait()
             st = read_status()
             return 'shown=%s filled=%s starved=%s presenter rc=%s%s' % (
                 int(st.get('shown', 0)), int(st.get('filled', 0)), int(st.get('starved', 0)), fb.returncode,
                 ' ffmpeg: ' + err[:120] if err else '')
-        threads = [threading.Thread(target=probe, args=a, daemon=True) for a in (
-            ('this script, /identity', py_identity), ('this script, stream', py_stream), ('ffmpeg, /identity', ff_http))]
+        names = ('name lookup', 'this script, /identity', 'this script, stream', 'ffmpeg, /identity')
+        threads = [threading.Thread(target=probe, args=a, daemon=True) for a in zip(names, (lookup, py_identity, py_stream, ff_http))]
         for t in threads: t.start()
         probe('colour bars through the presenter', bars)
-        for t in threads: t.join(8)
-        for name in ('this script, /identity', 'this script, stream', 'ffmpeg, /identity', 'colour bars through the presenter'):
+        for t in threads: t.join(max(0.0, deadline - time.time()))
+        self.end_probes()
+        for name in names + ('colour bars through the presenter',):
             log('selftest: %s: %s' % (name, results.get(name, 'no answer in time')))
         log('selftest: done')
+
+    def end_probes(self):
+        for p in self.probes:
+            try:
+                if isinstance(p, subprocess.Popen):
+                    if p.poll() is None: p.kill()
+                else:
+                    try: p.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+                    except Exception: pass
+                    p.close()
+            except Exception: pass
+        self.probes = []
 
     def kill(self):
         # ffmpeg first, so it is gone before its pipe closes and does not log
@@ -438,6 +467,7 @@ class Player:
                     if hold and p is self.p_fb: p.send_signal(signal.SIGUSR2)
                     else: p.terminate()
                 except Exception: pass
+        if not hold: self.end_probes()
 
     def fifo_thread(self):
         while True:
@@ -466,7 +496,7 @@ class Player:
             self.self_test()
         try: os.unlink(PLAYSTAT + '.err')
         except OSError: pass
-        while True:
+        while not self.stopping():
             self.paused = False          # a fresh presenter starts running
             try:
                 self.start()

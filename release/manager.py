@@ -344,8 +344,15 @@ def system_facts(root, secrets, proc_root=Path('/proc')):
     except OSError:
         pass
     try:
-        facts['main_processes'] = sorted({(p / 'comm').read_text().strip() for p in proc_root.iterdir()
-                                          if p.name.isdigit() and (p / 'comm').read_text().strip().startswith('MiSTer')})
+        names = set()
+        for proc in proc_root.iterdir():
+            try:
+                name = (proc / 'comm').read_bytes().decode('utf-8', errors='replace').strip() if proc.name.isdigit() else ''
+            except OSError:
+                continue
+            if name.startswith('MiSTer'):
+                names.add(name)
+        facts['main_processes'] = sorted(names)
     except OSError:
         pass
     try:
@@ -370,14 +377,14 @@ def system_facts(root, secrets, proc_root=Path('/proc')):
                            'bitrate': cfg.get('bitrate'), 'progressive': cfg.get('progressive')}
     except (OSError, ValueError):
         pass
+    facts['decoder_present'] = (root / 'ffmpeg').is_file() and os.access(root / 'ffmpeg', os.X_OK)
     try:
         state = read_state(root)
         folder = root / 'releases' / state['current']
         manifest = json.loads((folder / 'manifest.json').read_text())
         facts['payload_intact'] = all((folder / name).is_file() and digest(folder / name) == sha
                                       for name, sha in manifest['files'].items())
-        facts['decoder_present'] = (root / 'ffmpeg').is_file() and os.access(root / 'ffmpeg', os.X_OK)
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         pass
     for name in ('plexfb.stat', 'plexplay.stat.err'):
         try:
