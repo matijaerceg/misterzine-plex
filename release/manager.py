@@ -34,7 +34,31 @@ BOOT_START = '# BEGIN MISTERZINE PLEX LAUNCHER'
 BOOT_END = '# END MISTERZINE PLEX LAUNCHER'
 
 
-def menu_entries(card, enable=True):
+LEGACY_ENTRY = b'<mistergamedescription>\n  <rbf>menu</rbf>\n  <setname>misterzine-plex</setname>\n</mistergamedescription>\n'
+
+
+def legacy_watcher(root):
+    """True when the installed watcher only understands the pre-beta.4 menu bounce."""
+    try:
+        return b'SELECTIONS' not in (root / 'menu_launcher.py').read_bytes()
+    except OSError:
+        return False
+
+
+def repair_menu_entry(card):
+    """Point the main-menu entry at the selected release, in the form the
+    installed watcher understands. Called after any change of selection."""
+    root = card / 'misterzine-plex'
+    entry = card / 'MisterZine Plex Core.mgl'
+    if not entry.exists() or not (root / 'menu_launcher.py').is_file():
+        return
+    if not (root / 'active.json').is_file():
+        entry.unlink()
+        return
+    menu_entries(card)
+
+
+def menu_entries(card, enable=True, folder=None):
     root = card / 'misterzine-plex'
     startup = card / 'linux/user-startup.sh'
     if startup.is_symlink() or not startup.resolve().is_relative_to(card.resolve()):
@@ -46,7 +70,11 @@ def menu_entries(card, enable=True):
     text = '\n'.join(line for line in text.split('\n') if line not in (legacy, '# MisterZine Plex main-menu launcher'))
     entry = card / 'MisterZine Plex Core.mgl'
     if enable:
-        atomic(entry, b'<mistergamedescription>\n  <rbf>menu</rbf>\n  <setname>misterzine-plex</setname>\n</mistergamedescription>\n')
+        # Load the core directly. Bouncing through the menu core with a
+        # setname never reaches the watcher under forked main binaries
+        # (Zaparoo Frontend), which keep reporting the menu as the core.
+        # A pre-beta.4 watcher only knows the bounce, so keep it for one.
+        atomic(entry, LEGACY_ENTRY if legacy_watcher(root) else launch_body(root, folder).encode())
         command = 'setsid python3 ' + shlex.quote(str(root / 'menu_launcher.py')) + ' --card ' + shlex.quote(str(card))
         block = BOOT_START + '\n' + command + ' >/tmp/misterzine-plex-menu.log 2>&1 </dev/null &\n' + BOOT_END + '\n'
         # Put the hook ahead of any existing early exit in user-startup.sh.
@@ -223,7 +251,7 @@ def install(card, package, archive=None):
         if updates.is_symlink():
             raise ValueError('Update support directory cannot be a symbolic link')
         updates.mkdir(exist_ok=True)
-        menu_entries(card)
+        menu_entries(card, folder=root / 'releases' / ident)
     write_json(root / 'active.json', {'current': ident, 'previous': previous})
     configure_channel(root, manifest)
     start_menu_launcher(card)
@@ -255,6 +283,7 @@ def rollback(root):
             atomic(root / name, (previous / 'maintenance' / name).read_bytes())
     write_json(root / 'active.json', {'current': state['previous'], 'previous': state['current']})
     configure_channel(root, manifest)
+    repair_menu_entry(root.parent)
     print('Previous release selected. Account and settings preserved.')
 
 
@@ -346,19 +375,29 @@ def cleanup_player(folder):
             pass
 
 
-def core_launch_entry(root, folder):
-    # MiSTer anchors its core browser to the MGL's directory, even when the
-    # bitstream lives elsewhere. Keep this internal entry at the card root.
+def core_file(root, folder=None):
+    if folder is None:
+        folder = root / 'releases' / read_state(root)['current']
     core = folder / 'MisterZine Plex Core.rbf'
     if not core.exists():
         core = folder / 'MisterZine Plex.rbf'
-    entry = root.parent / '.misterzine-plex-core.mgl'
+    return core
+
+
+def launch_body(root, folder=None):
+    core = core_file(root, folder)
     # MGL core paths are relative to MiSTer's storage root, not the MGL file.
     # Also support an isolated installation nested under that mount for testing.
     storage = Path('/media') / root.parts[2] if len(root.parts) > 3 and root.parts[1] == 'media' else root.parent
     relative = core.relative_to(storage).with_suffix('').as_posix()
-    body = '<mistergamedescription>\n  <rbf>' + escape(relative) + '</rbf>\n</mistergamedescription>\n'
-    atomic(entry, body.encode())
+    return '<mistergamedescription>\n  <rbf>' + escape(relative) + '</rbf>\n</mistergamedescription>\n'
+
+
+def core_launch_entry(root, folder):
+    # MiSTer anchors its core browser to the MGL's directory, even when the
+    # bitstream lives elsewhere. Keep this internal entry at the card root.
+    entry = root.parent / '.misterzine-plex-core.mgl'
+    atomic(entry, launch_body(root, folder).encode())
     return entry
 
 
@@ -383,7 +422,8 @@ def mister_processes(proc_root=Path('/proc')):
         if not proc.name.isdigit():
             continue
         try:
-            if (proc / 'comm').read_text().strip() != 'MiSTer':
+            # Forks such as Zaparoo Frontend's MiSTer_Zaparoo load cores too.
+            if not (proc / 'comm').read_text().strip().startswith('MiSTer'):
                 continue
             args = (proc / 'cmdline').read_bytes().split(b'\0')
         except OSError:
@@ -401,6 +441,25 @@ def selected_core(core, proc_root=Path('/proc'), before=()):
                for pid, arg in mister_processes(proc_root).items())
 
 
+def core_loaded(core, proc_root=Path('/proc'), corename=Path('/tmp/CORENAME'), wait=3):
+    """True when the main-menu entry already loaded this core, so no reload is needed.
+
+    The core name appears a moment before the restarted main process does,
+    so give the process a little time rather than reloading over it."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            if corename.read_text().strip() != core.stem:
+                return False
+        except OSError:
+            return False
+        if selected_core(core, proc_root):
+            return True
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(.05)
+
+
 def recover_activation(root):
     journal = root / 'updates/activation.json'
     if not journal.exists() or os.environ.get('MISTERZINE_PLEX_READY_FILE'):
@@ -416,6 +475,7 @@ def recover_activation(root):
         (root / 'active.json').unlink(missing_ok=True)
     else:
         write_json(root / 'active.json', previous)
+    repair_menu_entry(root.parent)
     registration = (recovery / 'registration').read_bytes()
     dropin = root.parent / 'downloader_misterzine_plex.ini'
     if registration:
@@ -434,20 +494,22 @@ def run(root):
     args = [str(folder / 'plexcrt'), '-config', str(root / 'plexcrt.json'),
             '-cache', str(root / 'cache'), '-ffmpeg', str(root / 'ffmpeg')]
     subprocess.run(args + ['-check'], check=True)
-    entry = core_launch_entry(root, folder)
-    before = mister_processes()
-    with open('/dev/MiSTer_cmd', 'w') as cmd:
-        cmd.write('load_core ' + str(entry) + '\n')
-    core = folder / 'MisterZine Plex Core.rbf'
-    if not core.exists():
-        core = folder / 'MisterZine Plex.rbf'
-    # No fixed delay: MiSTer restarts its main process to load a core, so a
-    # fresh PID running this core is the signal, however quick or slow it is.
-    deadline = time.monotonic() + 10
-    while not selected_core(core, before=before):
-        if time.monotonic() > deadline:
-            raise RuntimeError('MiSTer did not load the selected RBF. Reinstall the matching package.')
-        time.sleep(.05)
+    core = core_file(root, folder)
+    if core_loaded(core):
+        print('Core already loaded by the menu entry', flush=True)
+    else:
+        print('Loading core', flush=True)
+        entry = core_launch_entry(root, folder)
+        before = mister_processes()
+        with open('/dev/MiSTer_cmd', 'w') as cmd:
+            cmd.write('load_core ' + str(entry) + '\n')
+        # No fixed delay: MiSTer restarts its main process to load a core, so a
+        # fresh PID running this core is the signal, however quick or slow it is.
+        deadline = time.monotonic() + 10
+        while not selected_core(core, before=before):
+            if time.monotonic() > deadline:
+                raise RuntimeError('MiSTer did not load the selected RBF. Reinstall the matching package.')
+            time.sleep(.05)
     # Keep a read-only watch on the core. Returning to Menu stops this app too.
     with open('/dev/fb0', 'rb') as fb, mmap.mmap(fb.fileno(), 4096, access=mmap.ACCESS_READ) as mem:
         last = struct.unpack_from('<I', mem, 0x40)[0]

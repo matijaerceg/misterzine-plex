@@ -127,6 +127,8 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(manager.read_state(self.root), original)
         self.assertEqual(drop.read_text(), 'original registration')
         self.assertEqual((self.root / 'manager.py').read_text(), '# synthetic helper old')
+        # The restored helpers predate the direct-launch entry, so the entry follows them.
+        self.assertEqual((self.card / 'MisterZine Plex Core.mgl').read_bytes(), manager.LEGACY_ENTRY)
 
     def test_corrupt_download_and_interruption_preserve_current(self):
         _, _, old = self.release('old')
@@ -200,10 +202,13 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(service.engine(self.card), [str(binary)])
         launcher = scripts / 'downloader.sh'; launcher.touch()
         self.assertEqual(service.engine(self.card), ['/bin/bash', str(launcher)])
-        r, _, _ = self.release()
+        r, z, _ = self.release()
         (self.root / 'updates').mkdir()
         def run(command, **kw):
             self.assertEqual(command[-2:], ['--run-only', 'misterzine_plex'])
+            staging = self.card / catalogue.STAGING
+            staging.mkdir(exist_ok=True)
+            (staging / 'package.zip').write_bytes(z.read_bytes())
             env = kw['env']
             self.assertEqual(env['UPDATE_LINUX'], 'false')
             self.assertEqual(env['ALLOW_REBOOT'], '0')
@@ -242,6 +247,22 @@ class UpdateTests(unittest.TestCase):
             kw['stdout'].write(output)
             return subprocess.CompletedProcess(command, 1)
         return run
+
+    def test_downloader_success_without_a_staged_file_falls_back_to_a_direct_fetch(self):
+        # Seen after an uninstall: Downloader exits 0 but leaves nothing on this card.
+        r, z, _ = self.release()
+        (self.card / 'Scripts').mkdir(); (self.card / 'Scripts/downloader.sh').touch()
+        (self.root / 'updates').mkdir()
+        def idle_runner(command, **kw):
+            kw['stdout'].write(b'Installed:\nnone.\n')
+            return subprocess.CompletedProcess(command, 0)
+        downloader = lambda card, root, release: service.download(
+            card, root, release, idle_runner, lambda *a: service.fetch_release(*a, opener=self.opener(z.read_bytes())))
+        service.prepare(self.card, r, downloader)
+        self.assertEqual(manager.digest(self.card / catalogue.STAGING / 'package.zip'), r['sha256'])
+        self.assertEqual(json.loads((self.root / 'updates/status.json').read_text())['stage'], 'ready')
+        log = (self.root / 'updates/download-output.log').read_text()
+        self.assertIn('Downloader finished without staging the release on this card. The release was then fetched directly.', log)
 
     def test_failed_downloader_run_falls_back_to_a_direct_fetch(self):
         r, z, _ = self.release()

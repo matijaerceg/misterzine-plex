@@ -298,6 +298,11 @@ def fetch_release(card, root, release, opener=None):
         part.unlink(missing_ok=True)
 
 
+def staged(card, release):
+    archive = guarded(card, releases.STAGING + '/package.zip')
+    return archive.is_file() and archive.stat().st_size == release['size'] and manager.digest(archive) == release['sha256']
+
+
 def download(card, root, release, runner=subprocess.run, fetch=fetch_release, probe=verdict):
     if other_downloader():
         raise RuntimeError('Another Downloader or Update All run is active. Try again when it finishes.')
@@ -316,8 +321,14 @@ def download(card, root, release, runner=subprocess.run, fetch=fetch_release, pr
         with log.open('wb') as out:
             result = runner(command + ['--run-only', releases.DB_ID], env=env, stdout=out, stderr=out, timeout=1800)
         if not result.returncode:
-            return
-        problems.append('Downloader ' + downloader_reason(log, result.returncode))
+            if staged(card, release):
+                return
+            # Downloader can report success while its store says the file
+            # already lives elsewhere (another drive, an earlier Update All
+            # run) or after the staged copy was removed. Fetch it here.
+            problems.append('Downloader finished without staging the release on this card')
+        else:
+            problems.append('Downloader ' + downloader_reason(log, result.returncode))
     except subprocess.TimeoutExpired:
         problems.append('Downloader timed out')
     except (OSError, ValueError, RuntimeError, urllib.error.URLError, http.client.HTTPException) as exc:
@@ -401,7 +412,7 @@ def prepare(card, release, downloader=download):
             status(root, 'download', release)
             archive = guarded(card, releases.STAGING + '/package.zip')
             # A matching package from an ordinary Downloader run can be reused.
-            if not archive.is_file() or archive.stat().st_size != release['size'] or manager.digest(archive) != release['sha256']:
+            if not staged(card, release):
                 downloader(card, root, release)
             status(root, 'verify', release)
             with tempfile.TemporaryDirectory(prefix='package-', dir=str(root / 'updates')) as tmp:
@@ -541,6 +552,7 @@ def activate(card, launch=start_and_check):
                     dropin.unlink(missing_ok=True)
                 else:
                     manager.atomic(dropin, old_registration)
+                manager.repair_menu_entry(card)
                 (root / 'updates/activation.json').unlink(missing_ok=True)
             status(root, 'failed', release, 'Startup failed. The previous release was restored.' if old else 'Startup failed. Run Install to retry.')
             if old:

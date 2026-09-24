@@ -8,7 +8,8 @@ import subprocess
 import sys
 import time
 
-SELECTION = 'misterzine-plex'
+# The entry loads the core itself; 'misterzine-plex' is the pre-beta.4 menu bounce.
+SELECTIONS = ('MisterZine Plex Core', 'MisterZine Plex', 'misterzine-plex')
 
 
 def main():
@@ -28,20 +29,44 @@ def main():
             try:
                 name = Path('/tmp/CORENAME')
                 stamp = name.stat().st_mtime_ns
-                if stamp == handled or name.read_text().strip() != SELECTION:
+                if stamp == handled or name.read_text().strip() not in SELECTIONS:
                     continue
-                handled = stamp
-                # An activation/uninstall must finish before a menu launch.
+                # An activation/uninstall must finish before a menu launch: keep
+                # the selection and look again, holding no lock meanwhile.
                 with (root / 'updates/worker.lock').open('a') as worker:
-                    fcntl.flock(worker, fcntl.LOCK_SH)
+                    try:
+                        fcntl.flock(worker, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    handled = stamp
                     with (root / 'manager.lock').open('a') as manager:
-                        fcntl.flock(manager, fcntl.LOCK_EX)
-                    if name.read_text().strip() != SELECTION or not (root / 'active.json').is_file():
+                        try:
+                            fcntl.flock(manager, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            # Something else started the app on this core load
+                            # (an update restart, for one); it is not ours to launch.
+                            continue
+                    if name.read_text().strip() not in SELECTIONS or not (root / 'active.json').is_file():
                         continue
                     with open('/tmp/misterzine-plex-menu-run.log', 'wb') as log:
                         child = subprocess.Popen([sys.executable, str(root / 'manager.py'), 'run', '--card', str(card)],
                             stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-                child.wait()
+                # A new pick always passes through the menu first. Any other
+                # change of the core name while the app runs (a forked main
+                # rewrites it when the app dies) is not a pick: mark it handled
+                # so a crashed app never relaunches by itself.
+                left = False
+                while child.poll() is None:
+                    time.sleep(.1)
+                    try:
+                        left = left or name.read_text().strip() not in SELECTIONS
+                    except OSError:
+                        pass
+                if not left:
+                    try:
+                        handled = name.stat().st_mtime_ns
+                    except OSError:
+                        pass
             except OSError:
                 time.sleep(1)
 

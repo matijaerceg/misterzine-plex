@@ -89,6 +89,43 @@ class InstallerTests(unittest.TestCase):
                 manager.install(self.card, self.package)
         self.assertEqual(manager.read_state(self.root)['current'], 'alpha-1')
 
+    @mock.patch.object(manager, 'decoder')
+    def test_menu_entry_follows_the_selected_release_and_the_installed_watcher(self, decoder):
+        import xml.etree.ElementTree as ET
+        entry = self.card / 'MisterZine Plex Core.mgl'
+        self.root.mkdir(parents=True)
+        (self.root / 'menu_launcher.py').write_text("SELECTIONS = ('MisterZine Plex Core',)\n")
+        self.package_version('alpha-1')
+        manager.install(self.card, self.package)
+        self.assertEqual(ET.parse(entry).findtext('rbf'), 'misterzine-plex/releases/alpha-1/MisterZine Plex Core')
+        self.package_version('alpha-2')
+        manager.install(self.card, self.package)
+        self.assertEqual(ET.parse(entry).findtext('rbf'), 'misterzine-plex/releases/alpha-2/MisterZine Plex Core')
+        manager.rollback(self.root)
+        self.assertEqual(ET.parse(entry).findtext('rbf'), 'misterzine-plex/releases/alpha-1/MisterZine Plex Core')
+        # A watcher from before beta.4 only reacts to the menu bounce.
+        (self.root / 'menu_launcher.py').write_text("SELECTION = 'misterzine-plex'\n")
+        manager.rollback(self.root)
+        self.assertEqual(entry.read_bytes(), manager.LEGACY_ENTRY)
+        (self.root / 'active.json').unlink()
+        manager.repair_menu_entry(self.card)
+        self.assertFalse(entry.exists())
+
+    def test_core_already_loaded_by_the_menu_entry_needs_no_reload(self):
+        proc = self.base / 'proc/40'
+        proc.mkdir(parents=True)
+        (proc / 'comm').write_text('MiSTer_Zaparoo\n')
+        (proc / 'cmdline').write_bytes(b'/media/fat/zaparoo/MiSTer_Zaparoo\0/media/fat/x/MisterZine Plex Core.rbf\0')
+        corename = self.base / 'CORENAME'
+        core = Path('/media/fat/x/MisterZine Plex Core.rbf')
+        self.assertFalse(manager.core_loaded(core, proc.parent, corename, wait=0))
+        corename.write_text('MENU\n')
+        self.assertFalse(manager.core_loaded(core, proc.parent, corename, wait=0))
+        corename.write_text('MisterZine Plex Core\n')
+        self.assertTrue(manager.core_loaded(core, proc.parent, corename, wait=0))
+        (proc / 'comm').write_text('python3\n')
+        self.assertFalse(manager.core_loaded(core, proc.parent, corename, wait=0))
+
     def test_core_launch_keeps_browser_at_card_root(self):
         import xml.etree.ElementTree as ET
         folder = self.root / 'releases/alpha-1'
