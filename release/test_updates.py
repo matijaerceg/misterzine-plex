@@ -522,3 +522,98 @@ class UpdateTests(unittest.TestCase):
         _, archive, _ = self.release()
         with patch.object(publish, 'run', side_effect=AssertionError('unexpected remote action')):
             publish.publish(archive,'v1.0.0','Synthetic notes',self.fixture/'publish')
+
+
+class FailureReasonTests(UpdateTests):
+    """Every way activation can go wrong leaves its reason in the status the
+    Updates screen shows, so a user does not have to ask what happened."""
+
+    def prepared(self):
+        _, _, old = self.release('old')
+        manager.install(self.card, old)
+        r, z, _ = self.release('new')
+        service.prepare(self.card, r, self.deliver(z))
+        return r
+
+    def status(self):
+        return json.loads((self.root / 'updates/status.json').read_text())
+
+    def test_busy_manager_lock_fails_before_anything_changes(self):
+        import fcntl
+        self.prepared()
+        holder = (self.root / 'manager.lock').open('a')
+        self.addCleanup(holder.close)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with self.assertRaises(RuntimeError):
+            service.activate(self.card, lambda root: self.fail('installed under a busy lock'))
+        s = self.status()
+        self.assertEqual(s['stage'], 'failed')
+        self.assertIn('Could not restart Plex: MisterZine Plex Core is running', s['message'])
+        self.assertIn('Your current version will keep working', s['message'])
+        self.assertEqual(manager.read_state(self.root)['current'], 'old')
+        self.assertFalse((self.root / 'updates/activation.json').exists())
+        self.assertTrue((self.root / 'updates/ready.json').exists())
+
+    def test_preflight_failure_reaches_the_screen(self):
+        self.prepared()
+        (self.root / 'updates/ready/manager.py').write_text('tampered')
+        with self.assertRaises(ValueError):
+            service.activate(self.card, lambda root: True)
+        s = self.status()
+        self.assertEqual(s['stage'], 'failed')
+        self.assertIn('Prepared installation support changed', s['message'])
+        (self.root / 'updates/ready.json').unlink()
+        with self.assertRaises(OSError):
+            service.activate(self.card, lambda root: True)
+        self.assertIn('Could not restart Plex: FileNotFoundError', self.status()['message'])
+
+    def test_failed_start_keeps_the_cause_and_reports_the_restore(self):
+        self.prepared()
+        stages = []
+        real = service.status
+        def spy(root, stage, release=None, message='', detail=''):
+            stages.append((stage, message)); real(root, stage, release, message, detail)
+        with patch.object(service, 'status', spy), self.assertRaises(RuntimeError):
+            service.activate(self.card, lambda root: manager.read_state(root)['current'] == 'old')
+        self.assertEqual([s for s, _ in stages], ['activating', 'activating', 'failed'])
+        self.assertIn('Restoring the previous release...', stages[1][1])
+        s = self.status()
+        self.assertEqual(s['message'], 'Could not restart Plex: The new release did not start. The previous release was restored.')
+        self.assertEqual(manager.read_state(self.root)['current'], 'old')
+        self.assertFalse((self.root / 'updates/activation.json').exists())
+
+    def test_failed_restore_keeps_the_journal_and_says_so(self):
+        self.prepared()
+        def broken(card):
+            raise RuntimeError('menu entry synthetic failure')
+        with patch.object(manager, 'repair_menu_entry', broken), self.assertRaises(RuntimeError):
+            service.activate(self.card, lambda root: False)
+        s = self.status()
+        self.assertEqual(s['stage'], 'failed')
+        self.assertIn('Could not restart Plex: The new release did not start.', s['message'])
+        self.assertIn('Restoring the previous release also failed: menu entry synthetic failure', s['message'])
+        self.assertIn('open Plex again', s['message'])
+        self.assertTrue((self.root / 'updates/activation.json').exists())
+        journal = json.loads((self.root / 'updates/activation.json').read_text())
+        self.assertEqual((journal['target'], journal['previous']), ('1.0.0', 'old'))
+        # The next launch finishes the restore and keeps the original cause on screen.
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(manager.recover_activation(self.root))
+        s = self.status()
+        self.assertEqual(s['stage'], 'failed')
+        self.assertTrue(s['message'].startswith('Could not restart Plex: The new release did not start.'))
+        self.assertIn('The update to 1.0.0 was interrupted and old was restored.', s['message'])
+        self.assertEqual(manager.read_state(self.root)['current'], 'old')
+        self.assertFalse((self.root / 'updates/activation.json').exists())
+
+    def test_recovery_after_reboot_explains_the_old_version(self):
+        _, _, old = self.release('old')
+        manager.install(self.card, old)
+        recovery = self.root / 'updates/recovery'; recovery.mkdir(parents=True)
+        manager.write_json(recovery / 'selection.json', manager.read_state(self.root))
+        (recovery / 'registration').write_bytes(b'')
+        manager.write_json(self.root / 'updates/activation.json', {'helpers': [], 'target': '2.0.0', 'previous': 'old'})
+        manager.write_json(self.root / 'updates/status.json', {'stage': 'activating', 'message': 'Restarting Plex...', 'pid': 0})
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(manager.recover_activation(self.root))
+        self.assertEqual(self.status()['message'], 'The update to 2.0.0 was interrupted and old was restored.')

@@ -282,22 +282,45 @@ func (u *Updates) Draw(c *gfx.Canvas, now time.Time) bool {
 		y += 32
 	}
 	if u.release == nil {
+		// The worker's outcome owns this area: a failure stays readable until the
+		// next update starts, and a catalogue check result never covers it.
 		s := a.updates.status
-		message := a.updates.message
-		if s.Stage != "" && (message == "" || s.Busy() || s.Stage == "ready") {
-			message = s.Message
+		note := a.updates.message
+		if a.updates.checking {
+			note = "Checking for updates..."
+		}
+		const lines = 4
+		y := 352
+		if note != "" {
+			for _, line := range wrap(f.SmallBold, note, MenuWidth, 1) {
+				a.text(c, MenuX, y, f.SmallBold, gfx.GreyLo, line)
+				y += 23
+			}
+		}
+		if s.Stage != "" {
+			message := s.Message
 			if message == "" {
 				message = s.Stage
 			}
-			if s.Stage == "ready" && s.Release != nil {
-				message = s.Release.Version + " is ready to restart."
+			if s.Stage == "ready" {
+				message = "The update is downloaded but not installed. Choose Restart now to install it."
+				if s.Release != nil {
+					message = s.Release.Version + " is downloaded but not installed. Choose Restart now to install it."
+				}
 			}
-		}
-		if a.updates.checking {
-			message = "Checking for updates..."
-		}
-		for i, line := range wrap(f.SmallBold, message, MenuWidth, 3) {
-			a.text(c, MenuX, 352+i*23, f.SmallBold, gfx.Purple, line)
+			room := lines - (y-352)/23
+			if s.Detail != "" && room > 1 {
+				room--
+			}
+			for _, line := range wrap(f.SmallBold, message, MenuWidth, room) {
+				a.text(c, MenuX, y, f.SmallBold, gfx.Purple, line)
+				y += 23
+			}
+			if s.Detail != "" && (y-352)/23 < lines {
+				for _, line := range wrap(f.SmallBold, s.Detail, MenuWidth, 1) {
+					a.text(c, MenuX, y, f.SmallBold, gfx.GreyLo, line)
+				}
+			}
 		}
 	}
 	return false

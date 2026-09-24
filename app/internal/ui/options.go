@@ -110,7 +110,7 @@ func (o *Options) items() []option {
 		updateLabel = "Updates - update available"
 	}
 	if o.app.updates.status.Stage == "ready" {
-		updateLabel = "Updates - ready to restart"
+		updateLabel = "Updates - downloaded, restart to install"
 	}
 	items = append(items, option{label: updateLabel, do: func() { o.app.Push(NewUpdates(o.app)) }})
 	items = append(items, option{label: "Version", val: func() string {

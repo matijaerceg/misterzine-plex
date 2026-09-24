@@ -14,6 +14,7 @@ type Status struct {
 	Updated float64  `json:"updated"`
 	Stage   string   `json:"stage"`
 	Message string   `json:"message"`
+	Detail  string   `json:"detail"`
 	PID     int      `json:"pid"`
 	Release *Release `json:"release"`
 }
@@ -32,7 +33,7 @@ func ReadStatus(root string) Status {
 	}
 	if s.Busy() && (s.PID <= 0 || syscall.Kill(s.PID, 0) != nil) {
 		s.Stage = "failed"
-		s.Message = "The update stopped. Your current version will keep working."
+		s.Message = "The updater stopped without reporting a result. Your current version will keep working. Return to the MiSTer menu and open Plex again before retrying."
 	}
 	return s
 }

@@ -482,6 +482,22 @@ def recover_activation(root):
         atomic(dropin, registration)
     else:
         dropin.unlink(missing_ok=True)
+    # Tell the Updates screen what happened before the evidence goes: a user who
+    # rebooted mid-update otherwise finds the old version back with no reason.
+    target = record.get('target')
+    message = ('The update to ' + target if target else 'An update') + ' was interrupted'
+    if previous:
+        message += ' and ' + str(previous.get('current', 'the previous release')) + ' was restored.'
+    else:
+        message += '. No earlier release is installed; run MisterZine-Plex-Install to retry.'
+    try:
+        earlier = json.loads((root / 'updates/status.json').read_text())
+        cause = earlier.get('message', '') if earlier.get('stage') in ('activating', 'failed') else ''
+        if cause.startswith('Could not restart Plex:'):
+            message = cause.split(' Restoring', 1)[0] + ' ' + message
+    except (OSError, ValueError, AttributeError):
+        pass
+    write_json(root / 'updates/status.json', {'stage': 'failed', 'message': message, 'pid': os.getpid(), 'updated': time.time()})
     journal.unlink()
     print('Interrupted activation recovered. Previous selection restored.')
     return True

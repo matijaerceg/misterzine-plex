@@ -64,7 +64,8 @@ activation waits for **Restart now**. **Later** leaves the current version activ
 If startup fails, the previous selection is restored.
 
 An ordinary Downloader run can refresh `misterzine-plex-downloads/package.zip`;
-it cannot activate that package. The selected channel is registered in
+it cannot activate that package. Rebooting the MiSTer does not install a downloaded
+update either; only **Restart now** does. The selected channel is registered in
 `downloader_misterzine_plex.ini`. Installation data stays in
 `/media/fat/misterzine-plex`.
 

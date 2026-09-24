@@ -84,11 +84,13 @@ def worker_lock(root):
         yield
 
 
-def status(root, stage, release=None, message=''):
+def status(root, stage, release=None, message='', detail=''):
     if not message:
         message = {'download': 'Downloading release...', 'verify': 'Verifying download...',
                    'install': 'Installing release files...'}.get(stage, '')
     value = {'stage': stage, 'message': message, 'pid': os.getpid(), 'updated': time.time()}
+    if detail:
+        value['detail'] = detail
     if release is not None:
         value['release'] = release
     manager.write_json(root / 'updates/status.json', value)
@@ -386,12 +388,12 @@ def reason(exc):
     """The message of an error this service or the manager raised on purpose;
     other errors are named only, so URLs, credentials or child output never
     reach the screen or the status file."""
-    return str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
+    return str(exc).rstrip('.') if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__
 
 
-def failed(root, release, summary, exc):
-    """Record why an update step failed: the status the app shows carries a
-    short reason, and the error log keeps the last few for diagnostics."""
+def record(root, summary, exc):
+    """Append one failure to the error log and return its screen-safe reason
+    and detail. Logging never masks the failure being recorded."""
     why = reason(exc)
     detail = getattr(exc, 'detail', '')
     log = root / ERROR_LOG
@@ -401,7 +403,14 @@ def failed(root, release, summary, exc):
         manager.atomic(log, ('\n'.join(lines) + '\n').encode())
     except OSError:
         pass
-    status(root, 'failed', release, summary + ': ' + why + '. Your current version will keep working.')
+    return why, detail
+
+
+def failed(root, release, summary, exc):
+    """Record why an update step failed: the status the app shows carries a
+    short reason, and the error log keeps the last few for diagnostics."""
+    why, detail = record(root, summary, exc)
+    status(root, 'failed', release, summary + ': ' + why + '. Your current version will keep working.', detail)
 
 
 def prepare(card, release, downloader=download):
@@ -431,7 +440,7 @@ def prepare(card, release, downloader=download):
                 manager.write_json(root / 'updates/ready-hashes.json', {
                     name: manager.digest(ready / name) for name in HELPERS + ('manifest.json',)})
             manager.write_json(root / 'updates/ready.json', release)
-            status(root, 'ready', release, 'Ready to restart')
+            status(root, 'ready', release, 'Downloaded. Choose Restart now to install')
         except Exception as exc:
             failed(root, release, 'Update could not be prepared', exc)
             raise
@@ -501,24 +510,31 @@ def start_and_check(root, timeout=25):
 def activate(card, launch=start_and_check):
     root = root_for(card)
     with worker_lock(root):
-        release = releases.entry(json.loads((root / 'updates/ready.json').read_text()))
-        package = root / 'updates/ready'
-        verified = json.loads((root / 'updates/ready-hashes.json').read_text())
-        if set(verified) != set(HELPERS + ('manifest.json',)) or any(
-                manager.digest(package / name) != digest for name, digest in verified.items()):
-            raise ValueError('Prepared installation support changed. Check for updates again.')
-        manifest = json.loads((package / 'manifest.json').read_text())
-        if not releases.manifest_matches(manifest, release):
-            raise ValueError('Prepared release metadata changed')
-        old = manager.read_state(root) if (root / 'active.json').exists() else None
-        # Copy runtime before activation so recovery does not depend on the new helper.
-        backups = {name: (root / name).read_bytes() for name in HELPERS if (root / name).exists()}
-        dropin = card / 'downloader_misterzine_plex.ini'
-        old_registration = dropin.read_bytes() if dropin.exists() else None
-        for name, sha in manifest.get('files', {}).items():
-            if name not in manager.PAYLOAD or manager.digest(package / 'payload' / name) != sha:
-                raise ValueError('Prepared payload changed. Check for updates again.')
-        stopped = False
+        release = None
+        try:
+            release = releases.entry(json.loads((root / 'updates/ready.json').read_text()))
+            package = root / 'updates/ready'
+            verified = json.loads((root / 'updates/ready-hashes.json').read_text())
+            if set(verified) != set(HELPERS + ('manifest.json',)) or any(
+                    manager.digest(package / name) != digest for name, digest in verified.items()):
+                raise ValueError('Prepared installation support changed. Check for updates again.')
+            manifest = json.loads((package / 'manifest.json').read_text())
+            if not releases.manifest_matches(manifest, release):
+                raise ValueError('Prepared release metadata changed')
+            old = manager.read_state(root) if (root / 'active.json').exists() else None
+            # Copy runtime before activation so recovery does not depend on the new helper.
+            backups = {name: (root / name).read_bytes() for name in HELPERS if (root / name).exists()}
+            dropin = card / 'downloader_misterzine_plex.ini'
+            old_registration = dropin.read_bytes() if dropin.exists() else None
+            for name, sha in manifest.get('files', {}).items():
+                if name not in manager.PAYLOAD or manager.digest(package / 'payload' / name) != sha:
+                    raise ValueError('Prepared payload changed. Check for updates again.')
+        except Exception as exc:
+            # Nothing has changed yet; the reason still belongs on the screen,
+            # not only on the worker's stderr.
+            failed(root, release, 'Could not restart Plex', exc)
+            raise
+        installed = False
         status(root, 'activating', release, 'Restarting Plex...')
         try:
             recovery = root / 'updates/recovery'
@@ -527,34 +543,51 @@ def activate(card, launch=start_and_check):
                 manager.atomic(recovery / name, data)
             manager.write_json(recovery / 'selection.json', old)
             manager.atomic(recovery / 'registration', old_registration or b'')
-            manager.write_json(root / 'updates/activation.json', {'helpers': list(backups)})
+            manager.write_json(root / 'updates/activation.json', {
+                'helpers': list(backups), 'target': release['version'],
+                'previous': old['current'] if old else None})
             stop_manager(root)
-            stopped = True
+            # Take the manager lock before touching the installation. A holder
+            # this worker did not recognise is reported, never killed.
             with manager.locked(root):
+                installed = True
                 manager.install(card, package)
                 register(card, release)
             if not launch(root):
                 raise RuntimeError('The new release did not start')
         except Exception as exc:
-            if not stopped:
+            if not installed:
                 (root / 'updates/activation.json').unlink(missing_ok=True)
                 failed(root, release, 'Could not restart Plex', exc)
                 raise
-            stop_manager(root)
-            with manager.locked(root):
-                for name, data in backups.items():
-                    manager.atomic(root / name, data)
-                if old is not None:
-                    manager.write_json(root / 'active.json', old)
-                else:
-                    (root / 'active.json').unlink(missing_ok=True)
-                if old_registration is None:
-                    dropin.unlink(missing_ok=True)
-                else:
-                    manager.atomic(dropin, old_registration)
-                manager.repair_menu_entry(card)
-                (root / 'updates/activation.json').unlink(missing_ok=True)
-            status(root, 'failed', release, 'Startup failed. The previous release was restored.' if old else 'Startup failed. Run Install to retry.')
+            # The installation changed. Keep the cause, and keep the screen
+            # busy while the previous release is put back.
+            why, detail = record(root, 'Could not restart Plex', exc)
+            cause = 'Could not restart Plex: ' + why + '.'
+            status(root, 'activating', release, cause + ' Restoring the previous release...', detail)
+            try:
+                stop_manager(root)
+                with manager.locked(root):
+                    for name, data in backups.items():
+                        manager.atomic(root / name, data)
+                    if old is not None:
+                        manager.write_json(root / 'active.json', old)
+                    else:
+                        (root / 'active.json').unlink(missing_ok=True)
+                    if old_registration is None:
+                        dropin.unlink(missing_ok=True)
+                    else:
+                        manager.atomic(dropin, old_registration)
+                    manager.repair_menu_entry(card)
+                    (root / 'updates/activation.json').unlink(missing_ok=True)
+            except Exception as restore_exc:
+                # The journal stays: the next launch of Plex finishes the restore.
+                restore_why, _ = record(root, 'Could not restore the previous release', restore_exc)
+                status(root, 'failed', release, cause + ' Restoring the previous release also failed: ' + restore_why
+                       + '. Return to the MiSTer menu and open Plex again to finish restoring it.', detail)
+                raise
+            status(root, 'failed', release, cause + (' The previous release was restored.' if old
+                   else ' No earlier release is installed. Run MisterZine-Plex-Install to retry.'), detail)
             if old:
                 if launch is start_and_check:
                     # Older releases do not emit a readiness marker. Restore them
