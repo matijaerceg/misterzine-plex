@@ -28,12 +28,15 @@ type option struct {
 	// told, or nothing. Bitrate and the sound toggles change nothing on
 	// screen, so stepping them must not refetch Home.
 	after func()
+	// busy reports that the last change is still being applied off-thread;
+	// the row says so beside its value.
+	busy func() bool
 }
 
 func (o *Options) items() []option {
 	cfg := o.app.Cfg
 	items := []option{
-		{label: "Only show 4:3 media", get: func() bool { return cfg.FourThree }, set: func(v bool) { cfg.FourThree = v }, after: o.app.Reconfigured},
+		{label: "Only show 4:3 media", get: func() bool { return cfg.FourThree }, set: func(v bool) { cfg.FourThree = v }, after: o.app.Reconfigured, busy: o.app.homeUpdating},
 		{label: "Autoplay next episode", get: func() bool { return !cfg.NoAutoplay }, set: func(v bool) { cfg.NoAutoplay = !v }},
 		{label: "Video bitrate", val: func() string {
 			value := mbps(cfg.BitrateKbps())
@@ -255,6 +258,10 @@ func (o *Options) Draw(c *gfx.Canvas, now time.Time) bool {
 				v, vc = "On", gfx.Amber
 			}
 			o.app.textRight(c, MenuRight, y+9, f.Body, vc, v)
+			if it.busy != nil && it.busy() {
+				// the change took at once; the rows behind are still catching up
+				o.app.textRight(c, MenuRight-f.Body.Width(v)-16, y+13, f.SmallBold, gfx.GreyLo, "updating")
+			}
 		}
 		if it.val != nil {
 			o.app.textRight(c, MenuRight, y+9, f.Body, gfx.Amber, it.val())

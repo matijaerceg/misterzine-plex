@@ -48,7 +48,7 @@ CLIENT_ID = os.environ.get('PLEX_CLIENT_ID') or 'mister-plexcrt-0001'
 BITRATE = int(os.environ.get('PLEX_BITRATE') or 3000)   # kbit/s cap for the transcode
 # gain the server applies when it folds surround to stereo (100 is unity);
 # stereo tracks are copied, so it changes nothing for them
-AUDIO_BOOST = int(os.environ.get('PLEX_AUDIO_BOOST') or 175)
+AUDIO_BOOST = int(os.environ.get('PLEX_AUDIO_BOOST') or 300)
 HOME = os.path.dirname(os.path.abspath(__file__))
 FF = os.environ.get('PLEX_FFMPEG') or os.path.join(HOME, 'ffmpeg')
 PLEXFB = os.path.join(HOME, 'plexfb')

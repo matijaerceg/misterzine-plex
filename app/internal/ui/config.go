@@ -102,7 +102,7 @@ var AudioBoosts = []struct {
 	Value int
 }{{"Off", 100}, {"Small", 175}, {"Large", 300}}
 
-const DefaultAudioBoost = 175
+const DefaultAudioBoost = 300
 
 // AudioBoostValue is the downmix gain in force.
 func (c *Config) AudioBoostValue() int {

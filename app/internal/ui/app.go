@@ -749,10 +749,25 @@ func (a *App) Reconfigured() {
 	a.pagers = map[string]*Pager{}
 	if len(a.stack) > 0 {
 		if h, ok := a.stack[0].(*Home); ok {
-			h.reload()
+			// fetch the rows again off-thread: Options must answer at once, and
+			// the 4:3 filter's first measurement can take seconds. The row shows
+			// it is updating until the new rows land.
+			h.refreshResult = nil
+			h.refreshAt = time.Time{}
+			h.updating = true
 			h.pageKey = ""
 		}
 	}
+}
+
+// homeUpdating reports whether Home is still refetching after a filter change.
+func (a *App) homeUpdating() bool {
+	if len(a.stack) > 0 {
+		if h, ok := a.stack[0].(*Home); ok {
+			return h.updating
+		}
+	}
+	return false
 }
 
 // Run drives input, drawing and presentation until stop closes.
@@ -828,6 +843,8 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 		a.pollUpdates(time.Now())
 		if h, ok := a.top().(*Home); ok {
 			h.pollHome(time.Now())
+		} else if h, ok := a.stack[0].(*Home); ok && h.updating {
+			h.pollHome(time.Now()) // a filter change refetches behind Options
 		}
 		if screen, ok := a.top().(interface{ pollRefresh(time.Time) }); ok {
 			screen.pollRefresh(time.Now())

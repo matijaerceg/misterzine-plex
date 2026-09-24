@@ -63,6 +63,7 @@ type Home struct {
 	fixed         *plex.Item // the hero item of a show page; nil: the focused item
 	refreshAt     time.Time
 	refreshResult chan homeResult
+	updating      bool // a filter changed in Options: rows are being fetched again
 	home          bool // the home screen: hamburger, Left at the edge opens the menu
 	row           int
 	col           []int
@@ -189,6 +190,8 @@ func (h *Home) pollHome(now time.Time) {
 		case result := <-h.refreshResult:
 			h.refreshResult = nil
 			h.refreshAt = now.Add(30 * time.Second)
+			h.updating = false
+			h.app.dirty = true
 			if result.err != nil {
 				h.app.Log.Printf("home refresh: %v", result.err)
 				return // keep the last usable rows during a network outage

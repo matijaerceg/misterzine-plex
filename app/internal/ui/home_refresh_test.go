@@ -57,6 +57,27 @@ func TestHomeRefreshRetainsRowsOnFailureAndRecovers(t *testing.T) {
 	}
 }
 
+func TestFilterChangeRefetchesHomeOffThread(t *testing.T) {
+	app := &App{Log: log.New(io.Discard, "", 0), Cfg: &Config{}}
+	h := &Home{app: app, home: true}
+	h.applyHome([]*plex.Hub{homeRow("continue", "a")})
+	h.refreshAt = time.Now().Add(time.Hour)
+	app.stack = []Screen{h}
+	app.Reconfigured() // must return at once: no fetch on this thread
+	if !app.homeUpdating() || !h.refreshAt.IsZero() {
+		t.Fatal("filter change did not schedule an immediate background refresh")
+	}
+	if h.Focused().RatingKey != "a" {
+		t.Fatal("rows were dropped before the new ones arrived")
+	}
+	h.refreshResult = make(chan homeResult, 1)
+	h.refreshResult <- homeResult{hubs: []*plex.Hub{homeRow("continue", "b")}}
+	h.pollHome(time.Now())
+	if app.homeUpdating() || h.Focused().RatingKey != "b" || !app.dirty {
+		t.Fatal("refresh result did not clear the updating state")
+	}
+}
+
 func TestHomeInitialEmptyAndUnchangedRefresh(t *testing.T) {
 	h := &Home{app: &App{}}
 	h.applyHome(nil)

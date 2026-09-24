@@ -40,9 +40,9 @@ ceiling, not a measured stream rate.
 
 Surround soundtracks are folded to stereo by the Plex server. A plain fold
 comes out noticeably quieter than a stereo track, so **Surround downmix boost**
-in Options raises the level when the server downmixes: Off, Small (the
-default) or Large. Stereo tracks are passed through unchanged. The setting
-applies from the next playback.
+in Options raises the level when the server downmixes: Off, Small or Large
+(the default). Stereo tracks are passed through unchanged. The setting applies
+from the next playback.
 
 ### Update, rollback and remove
 
