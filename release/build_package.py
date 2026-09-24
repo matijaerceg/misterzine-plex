@@ -15,7 +15,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build(out, core_tree, ident, version='0.1.0-beta.7'):
+def build(out, core_tree, ident, version='0.1.0-beta.8'):
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='misterzine-package-') as tmp:
         stage = Path(tmp)
@@ -74,6 +74,6 @@ if __name__ == '__main__':
     p.add_argument('--out', type=Path, default=ROOT / 'release/dist')
     p.add_argument('--core-tree', type=Path, default=ROOT / 'core')
     p.add_argument('--id', default='source-build')
-    p.add_argument('--version', default='0.1.0-beta.7')
+    p.add_argument('--version', default='0.1.0-beta.8')
     args = p.parse_args()
     build(args.out, args.core_tree, args.id, args.version)

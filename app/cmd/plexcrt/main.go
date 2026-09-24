@@ -28,7 +28,7 @@ import (
 	"plexcrt/internal/ui"
 )
 
-var version = "0.1.0-beta.7"
+var version = "0.1.0-beta.8"
 var build = "development"
 
 func main() {
