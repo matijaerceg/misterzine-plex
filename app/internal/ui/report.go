@@ -118,8 +118,8 @@ func (r *Report) Draw(c *gfx.Canvas, now time.Time) bool {
 	}
 	switch {
 	case r.sending:
+		// Later wakes the loop when the upload ends; no need to redraw meanwhile.
 		para("Sending...", gfx.Amber)
-		return true
 	case r.sent && r.code != "":
 		para("Sent. Post this code where you asked for help:", gfx.GreyHi)
 		a.text(c, MenuX, y+8, f.Big, gfx.Amber, r.code)

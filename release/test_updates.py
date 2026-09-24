@@ -14,6 +14,9 @@ import zipfile
 import build_distribution
 import catalogue
 import manager
+
+# Tests never talk to the live report service.
+manager.REPORT_SERVICE = ''
 import update_service as service
 import publish
 

@@ -193,7 +193,9 @@ def wrappers(card):
         path = card / 'Scripts' / ('MisterZine-Plex-' + label + '.sh')
         helper = 'update_service.py' if label in ('Install', 'Uninstall') else 'manager.py'
         body = '#!/bin/bash\npython3 ' + shlex.quote(str(card / 'misterzine-plex' / helper)) + ' ' + action + ' --card ' + shlex.quote(str(card)) + '\n'
-        body += 'result=$?\nif [ "$result" -ne 0 ]; then read -r -p "Press Enter to return to MiSTer..."; fi\nexit "$result"\n'
+        # Diagnostics always waits: the code it prints is what the player posts.
+        pause = 'true' if label == 'Diagnostics' else '[ "$result" -ne 0 ]'
+        body += 'result=$?\nif ' + pause + '; then read -r -p "Press Enter to return to MiSTer..."; fi\nexit "$result"\n'
         atomic(path, body.encode())
         path.chmod(0o755)
     for label in ('Run', 'Rollback', 'Remove', 'Diagnostics', 'Install'):
@@ -417,7 +419,7 @@ def report_secrets(root):
     for path in (root / 'plexcrt.json', root / 'plexcrt.json.bak'):
         try:
             cfg = json.loads(path.read_text())
-            secrets += [cfg.get(k, '') for k in ('token', 'server_token', 'server_url', 'server_name', 'client_id')]
+            secrets += [cfg.get(k, '') for k in ('token', 'server_token', 'server_url', 'server_name', 'client_id', 'account_name')]
         except (OSError, ValueError):
             pass
     return secrets
@@ -501,8 +503,8 @@ def send_report(text, version='unknown', opener=None):
     return code
 
 
-def diagnostics(root, upload=True):
-    """Write the report beside the app and send it. Returns (path, code, problem):
+def diagnostics(root, upload=False):
+    """Write the report beside the app and, when asked, send it. Returns (path, code, problem):
     code is '' when the upload did not happen and problem then says why."""
     text = build_report(root)
     out = root / 'report.txt'

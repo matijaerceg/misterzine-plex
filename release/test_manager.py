@@ -7,6 +7,9 @@ from unittest import mock
 
 import manager
 
+# Tests never talk to the live report service.
+manager.REPORT_SERVICE = ''
+
 
 class InstallerTests(unittest.TestCase):
     def setUp(self):
@@ -224,6 +227,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn('a line of playback', text)
         self.assertIn('watch: header wiped', text)
 
+    @mock.patch.object(manager, 'REPORT_SERVICE', 'https://reports.invalid')
     def test_send_report_reads_the_code_and_words_failures(self):
         import io
         import urllib.error
@@ -257,11 +261,28 @@ class ReportTests(unittest.TestCase):
             manager.send_report('x', opener=lambda req, timeout: Answer(b'{"code":"0O"}'))
 
     def test_diagnostics_saves_the_report_without_uploading(self):
-        with mock.patch.object(manager, 'build_report', return_value='MisterZine report v1\nApp: x\n'):
-            out, code, problem = manager.diagnostics(self.root, upload=False)
+        with mock.patch.object(manager, 'build_report', return_value='MisterZine report v1\nApp: x\n'), \
+                mock.patch.object(manager, 'send_report', side_effect=AssertionError('uploaded')):
+            out, code, problem = manager.diagnostics(self.root)
         self.assertEqual(out, self.root / 'report.txt')
         self.assertEqual(out.read_text(), 'MisterZine report v1\nApp: x\n')
         self.assertEqual((code, problem), ('', ''))
+
+    def test_report_service_off_is_worded(self):
+        with self.assertRaisesRegex(manager.ReportError, 'switched off'):
+            manager.send_report('x')
+
+    def test_account_name_never_reaches_the_report(self):
+        (self.root / 'plexcrt.json').write_text('{"token":"TESTtoken","account_name":"TESTaccount"}')
+        (self.tmp / 'misterzine-plex.log').write_text('signed in as TESTaccount\n')
+        self.assertNotIn('TESTaccount', self.report())
+
+    def test_diagnostics_entry_always_waits_for_a_key(self):
+        manager.wrappers(self.card)
+        diag = (self.card / 'Scripts/MisterZine-Plex-Diagnostics.sh').read_text()
+        self.assertIn('if true; then read -r -p', diag)
+        rollback = (self.card / 'Scripts/MisterZine-Plex-Rollback.sh').read_text()
+        self.assertIn('if [ "$result" -ne 0 ]; then read -r -p', rollback)
 
     def test_framebuffer_preparation_reports_a_write(self):
         params = self.base / 'params'
