@@ -29,6 +29,9 @@ Robustness:
     the transcoder alive, records the resume point and marks the item watched;
   - if the pipeline dies before the end (network drop, server restart) playback
     restarts from the last shown position, up to RETRIES times;
+  - if ffmpeg cannot open the stream at all (its own HTTP or TLS client failing
+    against a server this script reaches fine), the stream is fetched here
+    and piped into ffmpeg instead; PLEX_STREAM=pipe selects that from the start;
   - stop/seek/end all shut the transcode session down; a seek leaves the
     last frame on screen until the new stream's first frame.
 """
@@ -86,6 +89,17 @@ def drain_stderr(pipe):
             else:
                 log(line.decode('utf-8', 'replace').rstrip())
 
+def pump(resp, sink):
+    """copy a stream response into ffmpeg's stdin until either side ends"""
+    try:
+        with resp, sink:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk: return
+                sink.write(chunk)
+    except (OSError, ValueError):
+        return
+
 def get(path, params=None, timeout=30):
     url = HOST + path
     if params:
@@ -120,6 +134,8 @@ class Player:
         self.rk = rk
         self.offset = offset          # stream start position, seconds
         self.p_ff = self.p_fb = None
+        self.resp = None              # the stream response when fetched here
+        self.pump = os.environ.get('PLEX_STREAM') == 'pipe'
         self.sess = None
         self.fps = 23.976
         self.paused = False
@@ -190,21 +206,44 @@ class Player:
         # the H.264 loop filter costs a fifth of the machine and composite
         # blurs what it smooths: off unless PLEX_LOOP_FILTER asks for it
         decode = [] if os.environ.get('PLEX_LOOP_FILTER') else ['-skip_loop_filter', 'all', '-flags2', 'fast']
-        ff = [FF, '-nostdin', '-loglevel', 'warning', '-threads', '2'] + decode + [
-              '-reconnect', '1', '-reconnect_streamed', '1', '-rw_timeout', '15000000',
-              '-headers', 'X-Plex-Token: '+TOKEN+'\r\n', '-i', url,
-              '-map', '0:v:0', '-vf', vf, '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p',
-              '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le',
-              '-f', 'avi', 'pipe:1']
+        output = ['-map', '0:v:0', '-vf', vf, '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p',
+                  '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le',
+                  '-f', 'avi', 'pipe:1']
+        if self.pump:
+            self.resp = self.open_stream(url)
+            ff = [FF, '-loglevel', 'warning', '-threads', '2'] + decode + ['-i', 'pipe:0'] + output
+        else:
+            ff = [FF, '-nostdin', '-loglevel', 'warning', '-threads', '2'] + decode + [
+                  '-reconnect', '1', '-reconnect_streamed', '1', '-rw_timeout', '15000000',
+                  '-headers', 'X-Plex-Token: '+TOKEN+'\r\n', '-i', url] + output
         fb = [PLEXFB, 'avi', '%.4f' % self.fps]
         env = dict(os.environ, PLEXFB_DEV='/dev/fb0', PLEXFB_STATUS=STATUS)
         try: os.unlink(STATUS)
         except OSError: pass
-        self.p_ff = subprocess.Popen(ff, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        self.p_ff = subprocess.Popen(ff, stdin=subprocess.PIPE if self.pump else None,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         threading.Thread(target=drain_stderr, args=(self.p_ff.stderr,), daemon=True).start()
+        if self.pump:
+            threading.Thread(target=pump, args=(self.resp, self.p_ff.stdin), daemon=True).start()
         self.p_fb = subprocess.Popen(fb, stdin=self.p_ff.stdout, env=env)
         self.p_ff.stdout.close()
         self.paused = False
+
+    def open_stream(self, url):
+        # The same client that just made the decision call fetches the stream,
+        # so a server answer is logged as such, not as a decoder I/O error.
+        try:
+            return urllib.request.urlopen(urllib.request.Request(url, headers=PLEX_HDRS), timeout=60)
+        except urllib.error.HTTPError as e:
+            body = e.read(300).decode('utf-8', 'replace').replace('\n', ' ').strip()
+            log('stream request: HTTP %d %s: %s' % (e.code, e.reason, body))
+            try:
+                with open(PLAYSTAT + '.err', 'w') as f: f.write('The server refused the stream (HTTP %d).' % e.code)
+            except OSError: pass
+            raise RuntimeError('unplayable: the server refused the stream (HTTP %d)' % e.code)
+        except (urllib.error.URLError, OSError) as e:
+            log('stream request: %r' % e)
+            raise RuntimeError('unplayable: could not fetch the stream (%s)' % type(e).__name__)
 
     def kill(self):
         # ffmpeg first, so it is gone before its pipe closes and does not log
@@ -217,6 +256,10 @@ class Player:
                 try: p.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     p.kill(); p.wait()
+        if self.resp:
+            try: self.resp.close()
+            except Exception: pass
+            self.resp = None
 
     def end_session(self):
         # the transcoder was reused across seeks and restarts: shut it once.
@@ -327,6 +370,11 @@ class Player:
                 self.offset = pend[1]; retries = 0; continue
             if s.get('eof') == 1 and out_pos >= self.duration - END_SLACK:
                 log('end of stream at %.1f s' % out_pos); break
+            if not self.pump and not s.get('shown') and self.p_ff.returncode not in (None, 0):
+                # ffmpeg never got a frame out of the URL. Its HTTP client is not
+                # the one that reached the server a moment ago; use that one.
+                log('decoder could not open the stream (rc=%s); fetching it here instead' % self.p_ff.returncode)
+                self.pump = True; continue
             # died early: network, server, decoder. Try again from where we were.
             retries += 1
             if retries > RETRIES:
