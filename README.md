@@ -9,7 +9,7 @@ and HDMI support. The app's source is available in this repository.
 
 Public releases are free. Pre-release versions are paid early access through Patreon: install/browsing works, but playback requires the code from that version's Patreon post.
 
-You'll need a networked MiSTer running current MiSTer Linux, at least 250 MB free on the SD card, and a Plex account with access to a server that can transcode.
+You'll need a networked MiSTer running current MiSTer Linux, at least 250 MB free on the SD card, and a Plex account with access to a server that can transcode. Run **Update All** or **Downloader** first so MiSTer Linux is current: the installer fails on older system images.
 
 1. Download the Public or Beta installer from
    [Releases](https://github.com/matijaerceg/misterzine-plex-core/releases)

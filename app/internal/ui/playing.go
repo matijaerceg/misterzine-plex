@@ -691,14 +691,22 @@ func (p *Playing) dimmed(i int) bool {
 	return false
 }
 
+// heading is the overlay's title line: the show on the left with the
+// season, episode and episode title on the right, or the film with its
+// year on the right.
+func heading(it *plex.Item) (title, sub string) {
+	if it.Type == "episode" {
+		return it.GrandTitle, "S" + itoa(it.Parent) + " E" + itoa(it.Index) + "  " + it.Title
+	}
+	if it.Year > 0 {
+		return it.Title, itoa(it.Year)
+	}
+	return it.Title, ""
+}
+
 // panelKey describes what the panel would show, without drawing it.
 func (p *Playing) panelKey() string {
-	it := p.item
-	title, sub := it.Title, ""
-	if it.Type == "episode" {
-		title = it.GrandTitle
-		sub = "S" + itoa(it.Parent) + " E" + itoa(it.Index) + "  " + it.Title
-	}
+	title, sub := heading(p.item)
 	return title + sub + "|" + itoa(int(p.pos)) + "|" + itoa(p.focus) + "|" + itoa(btoi(p.paused)) + "|" + itoa(btoi(p.scrub)) + "|" + itoa(int(p.scrubTo))
 }
 
@@ -768,12 +776,7 @@ func (p *Playing) composeStatic(c *gfx.Canvas, peek, timed bool) {
 	f := p.app.F
 	c.Fill(0, 0, c.W, c.H, gfx.Bg)
 	it := p.item
-	title := it.Title
-	sub := ""
-	if it.Type == "episode" {
-		title = it.GrandTitle
-		sub = "S" + itoa(it.Parent) + " E" + itoa(it.Index) + "  " + it.Title
-	}
+	title, sub := heading(it)
 	y := 14
 	{
 		p.app.text(c, SafeX, y, f.Body, gfx.GreyHi, f.Body.Fit(title, SafeW-320))

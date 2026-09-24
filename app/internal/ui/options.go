@@ -24,12 +24,16 @@ type option struct {
 	val   func() string // a stepped value; nil otherwise
 	step  func(d int)   // d is -1 or +1
 	do    func()        // an action
+	// after runs once a change is saved: Home refetched, the theme player
+	// told, or nothing. Bitrate and the sound toggles change nothing on
+	// screen, so stepping them must not refetch Home.
+	after func()
 }
 
 func (o *Options) items() []option {
 	cfg := o.app.Cfg
 	items := []option{
-		{label: "Only show 4:3 media", get: func() bool { return cfg.FourThree }, set: func(v bool) { cfg.FourThree = v }},
+		{label: "Only show 4:3 media", get: func() bool { return cfg.FourThree }, set: func(v bool) { cfg.FourThree = v }, after: o.app.Reconfigured},
 		{label: "Autoplay next episode", get: func() bool { return !cfg.NoAutoplay }, set: func(v bool) { cfg.NoAutoplay = !v }},
 		{label: "Video bitrate", val: func() string {
 			value := mbps(cfg.BitrateKbps())
@@ -56,7 +60,7 @@ func (o *Options) items() []option {
 			}
 			return "480i (CRT)"
 		}, do: o.app.chooseVideo},
-		{label: "Theme music", get: func() bool { return !cfg.NoTheme }, set: func(v bool) { cfg.NoTheme = !v }},
+		{label: "Theme music", get: func() bool { return !cfg.NoTheme }, set: func(v bool) { cfg.NoTheme = !v }, after: o.app.syncTheme},
 		{label: "Navigation sounds", get: func() bool { return !cfg.NoTaps }, set: func(v bool) { cfg.NoTaps = !v }},
 	}
 	if cfg.Token != "" {
@@ -198,7 +202,9 @@ func (o *Options) Key(ev input.Event, now time.Time) {
 			o.app.Notice, o.app.NoticeAt = "Could not save settings. Check free space and retry.", now
 			return
 		}
-		o.app.Reconfigured()
+		if it.after != nil {
+			it.after()
+		}
 	}
 }
 
