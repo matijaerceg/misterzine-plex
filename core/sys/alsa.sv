@@ -17,6 +17,9 @@
 //  with this program; if not, write to the Free Software Foundation, Inc.,
 //  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
+//  Modified 2026-09-24 for MisterZine Plex Core: the sample tick keeps its
+//  increment (see ce_sample below).
+//
 //============================================================================
 
 module alsa
@@ -146,10 +149,12 @@ reg ce_sample;
 always @(posedge clk) begin
 	reg [31:0] acc = 0;
 
+	// The tick must add its increment too: subtracting alone made every sample
+	// one clock longer (513 clocks, 47906 Hz), so playback ran 0.2% slow.
 	ce_sample <= 0;
 	acc <= acc + 48000 + {hurryup,6'd0};
 	if(acc >= CLK_RATE) begin
-		acc <= acc - CLK_RATE;
+		acc <= acc + 48000 + {hurryup,6'd0} - CLK_RATE;
 		ce_sample <= 1;
 	end
 end
