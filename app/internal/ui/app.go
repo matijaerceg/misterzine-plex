@@ -103,6 +103,7 @@ type App struct {
 	// CacheDir is where artwork is kept (for a client made after sign-in).
 	cacheDir      string
 	aspects       Aspects // show shapes for the 4:3 filter
+	lastSection   string  // the library the drawer opened last; it opens on it again
 	theme         Theme
 	lastFocus     focusPosition
 	focusReady    bool
@@ -546,7 +547,14 @@ func (a *App) Menu() {
 		items = append(items, &plex.Item{RatingKey: s.Key, Title: s.Title, Type: "section", Key: s.Key})
 	}
 	items = append(items, &plex.Item{Title: "Options", Type: "options"})
-	a.Push(NewDrawer(a, a.stack[0], items))
+	// open on the library visited last, so a long list needs no scrolling to return
+	cur := 0
+	for i, it := range items {
+		if it.Type == "section" && it.Key == a.lastSection {
+			cur = i
+		}
+	}
+	a.Push(NewDrawer(a, a.stack[0], items, cur))
 }
 
 // MenuPick acts on a drawer entry.
@@ -560,6 +568,7 @@ func (a *App) MenuPick(d *Drawer, it *plex.Item) {
 		a.Push(NewOptions(a))
 	case "section":
 		if s, ok := a.section(it.Key); ok {
+			a.lastSection = s.Key
 			// the wall replaces the drawer once it has slid out: Back from it is home
 			d.Close(func() { a.Push(NewWall(a, s)) })
 		}

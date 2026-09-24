@@ -144,7 +144,7 @@ func main() {
 	}
 	defer r.Close()
 	player := &ui.Player{Script: *script, Fifo: "/tmp/plexplay.ctl", LogTo: filepath.Join(os.TempDir(), "plexplay.log"),
-		Status: "/tmp/plexfb.stat", Env: playerEnv, Kbps: cfg.BitrateKbps}
+		Status: "/tmp/plexfb.stat", Env: playerEnv, Kbps: cfg.BitrateKbps, Boost: cfg.AudioBoostValue}
 	player.Access = func() error { return beta.Check(filepath.Dir(*cfgPath)) }
 	app := ui.New(client, r, player, lg)
 	app.Cfg = cfg

@@ -18,10 +18,11 @@ type Config struct {
 	RecentSearches     []string `json:"recent_searches,omitempty"`
 	NoTaps             bool     `json:"no_taps"`
 	NoTheme            bool     `json:"no_theme"`
-	Progressive        bool     `json:"progressive"` // confirmed HDMI 480p preference
-	FourThree          bool     `json:"only_4x3"`    // hide media wider than 4:3
-	NoAutoplay         bool     `json:"no_autoplay"` // do not run on to the next episode
-	Bitrate            int      `json:"bitrate"`     // transcode cap in kbit/s; 0 is the default
+	Progressive        bool     `json:"progressive"`           // confirmed HDMI 480p preference
+	FourThree          bool     `json:"only_4x3"`              // hide media wider than 4:3
+	NoAutoplay         bool     `json:"no_autoplay"`           // do not run on to the next episode
+	Bitrate            int      `json:"bitrate"`               // transcode cap in kbit/s; 0 is the default
+	AudioBoost         int      `json:"audio_boost,omitempty"` // gain when the server folds surround to stereo; 0 is the default
 	ClientID           string   `json:"client_id"`
 	Token              string   `json:"token"` // the plex.tv account token
 	AccountName        string   `json:"account_name,omitempty"`
@@ -91,6 +92,24 @@ func (c *Config) BitrateKbps() int {
 		return DefaultBitrate
 	}
 	return min(c.Bitrate, MaxBitrate)
+}
+
+// AudioBoosts are the downmix gains offered, as the Plex transcoder's
+// audioBoost value: 100 is unity. They apply only when the server folds a
+// surround track to stereo; stereo sources are copied untouched.
+var AudioBoosts = []struct {
+	Label string
+	Value int
+}{{"Off", 100}, {"Small", 175}, {"Large", 300}}
+
+const DefaultAudioBoost = 175
+
+// AudioBoostValue is the downmix gain in force.
+func (c *Config) AudioBoostValue() int {
+	if c.AudioBoost <= 0 {
+		return DefaultAudioBoost
+	}
+	return c.AudioBoost
 }
 
 // SignedIn reports whether a server is on record.

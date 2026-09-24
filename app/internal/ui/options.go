@@ -51,6 +51,23 @@ func (o *Options) items() []option {
 			i = max(0, min(len(Bitrates)-1, i+d))
 			cfg.Bitrate = Bitrates[i]
 		}},
+		{label: "Surround downmix boost", val: func() string {
+			for _, b := range AudioBoosts {
+				if b.Value == cfg.AudioBoostValue() {
+					return b.Label
+				}
+			}
+			return itoa(cfg.AudioBoostValue()) + "%"
+		}, step: func(d int) {
+			i := 0
+			for j, b := range AudioBoosts {
+				if b.Value == cfg.AudioBoostValue() {
+					i = j
+				}
+			}
+			i = max(0, min(len(AudioBoosts)-1, i+d))
+			cfg.AudioBoost = AudioBoosts[i].Value
+		}},
 		{label: "Video output", val: func() string {
 			if o.app.videoLocked() {
 				return "480i (CRT profile)"

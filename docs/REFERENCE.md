@@ -20,8 +20,10 @@ Detailed behavior and display settings. For everyday help, see the
   progress bar and the times, and works the same way: taps and holds add
   up into one seek. The last frame stays on screen until the new position
   starts playing.
+- The menu lists Home, Search, the movie and TV libraries, and Options. A long
+  list of libraries scrolls, and the menu opens on the library visited last.
 - Options contains video mode, theme music, navigation taps, autoplay, bitrate,
-  the 4:3 filter, server selection and sign-out. The 4:3 filter applies to the
+  downmix boost, the 4:3 filter, server selection and sign-out. The 4:3 filter applies to the
   home rows, search and every library view. Movies and episodes are judged by
   their own picture; a show by its first episode. Each TV library is read once
   for that, the first time the filter needs it, and the answers are kept in the
@@ -35,6 +37,12 @@ Theme music and navigation taps can be disabled in Options. The default bitrate
 is 3 Mbps; try 1.5–2 Mbps if playback stalls. The 4.5 and 6 Mbps choices are
 experimental and may cause video or audio stalls. This setting is a request
 ceiling, not a measured stream rate.
+
+Surround soundtracks are folded to stereo by the Plex server. A plain fold
+comes out noticeably quieter than a stereo track, so **Surround downmix boost**
+in Options raises the level when the server downmixes: Off, Small (the
+default) or Large. Stereo tracks are passed through unchanged. The setting
+applies from the next playback.
 
 ### Update, rollback and remove
 

@@ -22,6 +22,7 @@ type Player struct {
 	Status string       // plexfb's status file; it appears the moment plexfb starts
 	Env    []string     // PLEX_HOST, PLEX_TOKEN, PLEX_CLIENT_ID for the launcher
 	Kbps   func() int   // the transcode cap to ask for, read at each start
+	Boost  func() int   // the surround-to-stereo gain to ask for, read at each start
 	Access func() error // optional official-beta entitlement check
 }
 
@@ -110,6 +111,9 @@ func (p *Player) Start(ratingKey string, offset int) (*Session, error) {
 	cmd.Env = append(append(os.Environ(), "PYTHONUNBUFFERED=1", "MISTERZINE_PLEX_OWNER="+filepath.Clean(p.Script)), p.Env...)
 	if p.Kbps != nil {
 		cmd.Env = append(cmd.Env, "PLEX_BITRATE="+strconv.Itoa(p.Kbps()))
+	}
+	if p.Boost != nil {
+		cmd.Env = append(cmd.Env, "PLEX_AUDIO_BOOST="+strconv.Itoa(p.Boost()))
 	}
 	if err := cmd.Start(); err != nil {
 		if lf != nil {

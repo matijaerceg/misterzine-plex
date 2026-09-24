@@ -16,6 +16,7 @@ type Drawer struct {
 	app       *App
 	items     []*plex.Item
 	cur       int
+	first     int         // the first row shown: the list scrolls when it outgrows the panel
 	back      *gfx.Image  // the home screen, dimmed
 	page      *gfx.Canvas // the drawer panel, composed only when selection changes
 	key       string      // what the page was composed for
@@ -30,12 +31,17 @@ const (
 	DrawerW    = 324
 	DrawerRowH = MenuRowH
 	DrawerY0   = SafeY + 64
+	// DrawerRows is how many entries fit above the version line at the foot.
+	DrawerRows = (SafeBottom - 28 - DrawerY0) / DrawerRowH
 	BackBright = 56 // of 255: the home screen behind the menu
 )
 
-// NewDrawer composes the menu over a snapshot of the screen beneath.
-func NewDrawer(app *App, under Screen, items []*plex.Item) *Drawer {
+// NewDrawer composes the menu over a snapshot of the screen beneath, with
+// the entry at cur selected and in view.
+func NewDrawer(app *App, under Screen, items []*plex.Item, cur int) *Drawer {
 	d := &Drawer{app: app, items: items, animating: true}
+	d.cur = max(0, min(len(items)-1, cur))
+	d.scroll()
 	snap := gfx.NewCanvas(720, 480)
 	under.Draw(snap, time.Now())
 	d.back = &gfx.Image{W: snap.W, H: snap.H, Pix: snap.Pix}
@@ -44,7 +50,7 @@ func NewDrawer(app *App, under Screen, items []*plex.Item) *Drawer {
 	snap.BlendSolidClip(0, 0, d.back, 0, 256-BackBright, 0, 0, snap.W, snap.H)
 	d.page = gfx.NewCanvas(DrawerW, 480)
 	d.compose()
-	d.key = itoa(d.cur)
+	d.key = d.composeKey()
 	// Preparation must not consume the first part of the slide.
 	d.openAt = time.Now()
 	return d
@@ -89,7 +95,21 @@ func (d *Drawer) Key(ev input.Event, now time.Time) {
 	case input.Enter:
 		d.app.MenuPick(d, d.items[d.cur])
 	}
+	d.scroll()
 }
+
+// scroll keeps the selection inside the window of rows that fit.
+func (d *Drawer) scroll() {
+	if d.cur < d.first {
+		d.first = d.cur
+	}
+	if d.cur >= d.first+DrawerRows {
+		d.first = d.cur - DrawerRows + 1
+	}
+	d.first = max(0, min(d.first, len(d.items)-DrawerRows))
+}
+
+func (d *Drawer) composeKey() string { return itoa(d.first) + ":" + itoa(d.cur) }
 
 // offset is how far the panel still sits off the left edge.
 func (d *Drawer) offset(now time.Time) (int, bool) {
@@ -128,7 +148,7 @@ func (d *Drawer) Draw(c *gfx.Canvas, now time.Time) bool {
 		}
 		return d.app.top().Draw(c, now)
 	}
-	key := itoa(d.cur)
+	key := d.composeKey()
 	if key != d.key {
 		d.compose()
 		d.key = key
@@ -150,7 +170,9 @@ func (d *Drawer) compose() {
 	}
 	f := d.app.F.Body
 	y := DrawerY0
-	for i, it := range d.items {
+	last := min(len(d.items), d.first+DrawerRows)
+	for i := d.first; i < last; i++ {
+		it := d.items[i]
 		col := gfx.GreyHi
 		if i == d.cur {
 			col = gfx.White
@@ -170,5 +192,13 @@ func (d *Drawer) compose() {
 		}
 		c.Text(MenuX, y, f, col, f.Fit(title, DrawerW-MenuX-24))
 		y += DrawerRowH
+	}
+	// more entries above or below the window: a chevron at the edge
+	cx := MenuX + (DrawerW-MenuX-24)/2
+	if d.first > 0 {
+		chevron(c, cx, DrawerY0-10, true, gfx.GreyLo)
+	}
+	if last < len(d.items) {
+		chevron(c, cx, y+2, false, gfx.GreyLo)
 	}
 }

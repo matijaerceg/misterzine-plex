@@ -46,6 +46,9 @@ if not HOST or not TOKEN:
     raise SystemExit('Sign in through MisterZine Plex Core before starting playback.')
 CLIENT_ID = os.environ.get('PLEX_CLIENT_ID') or 'mister-plexcrt-0001'
 BITRATE = int(os.environ.get('PLEX_BITRATE') or 3000)   # kbit/s cap for the transcode
+# gain the server applies when it folds surround to stereo (100 is unity);
+# stereo tracks are copied, so it changes nothing for them
+AUDIO_BOOST = int(os.environ.get('PLEX_AUDIO_BOOST') or 175)
 HOME = os.path.dirname(os.path.abspath(__file__))
 FF = os.environ.get('PLEX_FFMPEG') or os.path.join(HOME, 'ffmpeg')
 PLEXFB = os.path.join(HOME, 'plexfb')
@@ -174,7 +177,10 @@ class Player:
             'path': '/library/metadata/%s' % self.rk, 'mediaIndex': 0, 'partIndex': 0,
             'protocol': 'http', 'directPlay': 0, 'directStream': 0,
             'videoResolution': '720x480', 'maxVideoBitrate': BITRATE, 'videoQuality': 100,
-            'audioBoost': 100, 'subtitles': 'burn',
+            'audioBoost': AUDIO_BOOST, 'subtitles': 'burn',
+            # the Plex Web profile allows six-channel AAC; cap audio at stereo so the
+            # server downmixes (and boosts) rather than ffmpeg on the ARM
+            'X-Plex-Client-Profile-Extra': 'add-limitation(scope=videoAudioCodec&scopeName=*&type=upperBound&name=audio.channels&value=2)',
             'session': sess, 'X-Plex-Session-Identifier': sess,
             'copyts': 1, 'offset': int(self.offset), 'fastSeek': 1,
             'location': 'wan', 'mediaBufferSize': 12288, 'hasMDE': 1,
@@ -184,8 +190,10 @@ class Player:
         root = ET.fromstring(get('/video/:/transcode/universal/decision', params, timeout=60))
         med = root.find('.//Media')
         mg = lambda k: med.get(k) if med is not None else '?'
-        log('decision: %s -> %sx%s %s/%s, cap %d kbps' % (root.get('transcodeDecisionText'),
-            mg('width'), mg('height'), mg('videoCodec'), mg('audioCodec'), BITRATE))
+        as_ = root.find('.//Stream[@streamType="2"]')
+        log('decision: %s -> %sx%s %s/%s %sch (boost %d), cap %d kbps' % (root.get('transcodeDecisionText'),
+            mg('width'), mg('height'), mg('videoCodec'), mg('audioCodec'),
+            as_.get('channels') if as_ is not None else '?', AUDIO_BOOST, BITRATE))
         if root.get('transcodeDecisionCode') not in (None, '1000', '1001'):
             # the server will not transcode this file: say why and give up
             self.show_error(safe_text(root.get('transcodeDecisionText') or 'Cannot play this file.'))
