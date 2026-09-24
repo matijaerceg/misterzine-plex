@@ -138,6 +138,14 @@ func New(c *plex.Client, out Presenter, player *Player, lg *log.Logger) *App {
 }
 
 // Push shows a screen on top of the stack.
+// WakeUp asks the loop for a redraw from another goroutine; never blocks.
+func (a *App) WakeUp() {
+	select {
+	case a.Wake <- struct{}{}:
+	default:
+	}
+}
+
 func (a *App) Push(s Screen) { a.stack = append(a.stack, s); a.dirty = true; a.syncTheme() }
 
 // Pop returns to the previous screen; false at the root.

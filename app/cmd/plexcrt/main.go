@@ -143,13 +143,13 @@ func main() {
 		lg.Fatalf("ring: %v (is MisterZine Plex Core loaded?)", err)
 	}
 	defer r.Close()
-	watching := make(chan struct{})
-	go r.Watch(lg.Printf, watching)
-	defer close(watching)
 	player := &ui.Player{Script: *script, Fifo: "/tmp/plexplay.ctl", LogTo: filepath.Join(os.TempDir(), "plexplay.log"),
 		Status: "/tmp/plexfb.stat", Env: playerEnv, Kbps: cfg.BitrateKbps, Boost: cfg.AudioBoostValue}
 	player.Access = func() error { return beta.Check(filepath.Dir(*cfgPath)) }
 	app := ui.New(client, r, player, lg)
+	watching := make(chan struct{})
+	go r.Watch(lg.Printf, app.WakeUp, watching)
+	defer close(watching)
 	app.Cfg = cfg
 	app.Version, app.Build = version, build
 	app.SetCacheDir(*cache)
