@@ -2,14 +2,14 @@
   "schema": 1,
   "releases": {
     "beta": {
-      "id": "beta-0.1.0-beta.5",
-      "version": "0.1.0-beta.5",
+      "id": "beta-0.1.0-beta.6",
+      "version": "0.1.0-beta.6",
       "channel": "beta",
-      "notes": "Native Plex client for MiSTer. Built for CRTs at 480i over Component, RGB, S-Video or Composite, with 480p on HDMI.\n\nBeta access. This is a paid early-access build. Install and browsing work without a code. Playback needs the code from the MisterZine Patreon post. Stable releases will be free and codeless.\n\nNew in beta.5\n- Surround soundtracks are no longer quiet. 5.1 and 7.1 tracks used to be folded to stereo on the MiSTer at a level well below a plain stereo track. The Plex server now does the fold and boosts it. A new Surround downmix boost setting in Options (Off, Small, Large; Large is the default) controls how much. Stereo tracks are unchanged. Takes effect from the next play.\n- The menu scrolls when there are more libraries than fit on screen, and opens on the library you visited last.\n- Only show 4:3 media now switches at once. The row shows \"updating\" while the home rows are refetched in the background instead of freezing Options until they arrive.\n- Playback fetches the stream itself when ffmpeg cannot open it against your server, and keeps stop and seek working while a fetch is retried.\n\nRequirements\n- Networked MiSTer on current MiSTer Linux\n- 250 MB free on the SD card\n- Plex account with a server that can transcode\n\nInstall\n1. Download the Beta installer below and put it in the SD card's Scripts folder.\n2. Run it from Scripts.\n3. Follow the sign-in screen at plex.tv/link.\n\nAlready on an earlier beta: open Options > Updates in the app and install from there.\n\nNTSC 480i only; PAL isn't supported yet.\n\nThis is unstable beta software. It talks to your real Plex account: playback, watched marks and resume points change your library, and a bug could change them wrongly. Use it at your own risk; no responsibility is taken for what it does to your library or your MiSTer.\n",
-      "url": "https://github.com/matijaerceg/misterzine-plex-core/releases/download/v0.1.0-beta.5/MisterZine-Plex-Core-beta-0.1.0-beta.5.zip",
+      "notes": "Home screen fixes for large or slow servers.\n\n- The home screen no longer shows \"Cannot reach the server\" when only one of its rows fails. Continue Watching and each library's Recently Added row are fetched separately; a row that does not answer is left out and the others still show.\n- The home rows wait up to 30 seconds for a server that builds them slowly, such as a large seedbox library.\n- When the home screen really cannot load, the error screen now names the request that failed and why, to include in a report.\n",
+      "url": "https://github.com/matijaerceg/misterzine-plex-core/releases/download/v0.1.0-beta.6/MisterZine-Plex-Core-beta-0.1.0-beta.6.zip",
       "db_url": "https://raw.githubusercontent.com/matijaerceg/misterzine-plex-core/distribution/beta.json.zip",
-      "size": 4839222,
-      "sha256": "ce53004310a3e4d39ee030af5bd7677b22d7012538109e1a1bde3b3f76173a8f",
+      "size": 4850227,
+      "sha256": "62ae8f3d177e1453e9c2f47d77b05a5b2b60b611c27743b257c6c742851c897e",
       "access": {
         "batch": "initial-beta",
         "sha256": "7915f13296ba503857c14e7a2070b1e79bc85c0bd40fdb8c8e103bcfaab5d192"
