@@ -35,7 +35,7 @@ Robustness:
   - stop/seek/end all shut the transcode session down; a seek leaves the
     last frame on screen until the new stream's first frame.
 """
-import os, sys, uuid, subprocess, signal, threading, time, errno, stat as st_
+import os, sys, uuid, subprocess, signal, threading, time, errno, socket, stat as st_
 import urllib.request, urllib.parse, urllib.error
 sys.stdout.reconfigure(line_buffering=True)   # logs stay readable when redirected
 import xml.etree.ElementTree as ET
@@ -129,6 +129,10 @@ def read_status():
         return {}
 
 
+class StreamError(Exception):
+    """the stream could not be fetched this time; worth another try"""
+
+
 class Player:
     def __init__(self, rk, offset):
         self.rk = rk
@@ -184,9 +188,7 @@ class Player:
             mg('width'), mg('height'), mg('videoCodec'), mg('audioCodec'), BITRATE))
         if root.get('transcodeDecisionCode') not in (None, '1000', '1001'):
             # the server will not transcode this file: say why and give up
-            try:
-                with open(PLAYSTAT + '.err', 'w') as f: f.write(safe_text(root.get('transcodeDecisionText') or 'Cannot play this file.'))
-            except OSError: pass
+            self.show_error(safe_text(root.get('transcodeDecisionText') or 'Cannot play this file.'))
             raise RuntimeError('unplayable: %s' % root.get('transcodeDecisionText'))
         # Source frame rate drives the presenter: 23.976 -> 2.5 fields per frame,
         # which the presenter turns into a 3:2 field cadence, like a DVD player.
@@ -235,15 +237,24 @@ class Player:
         try:
             return urllib.request.urlopen(urllib.request.Request(url, headers=PLEX_HDRS), timeout=60)
         except urllib.error.HTTPError as e:
-            body = e.read(300).decode('utf-8', 'replace').replace('\n', ' ').strip()
+            body = ''
+            try: body = e.read(300).decode('utf-8', 'replace').replace('\n', ' ').strip()
+            except Exception: pass
+            try: e.close()
+            except Exception: pass
             log('stream request: HTTP %d %s: %s' % (e.code, e.reason, body))
-            try:
-                with open(PLAYSTAT + '.err', 'w') as f: f.write('The server refused the stream (HTTP %d).' % e.code)
-            except OSError: pass
+            self.show_error('The server refused the stream (HTTP %d).' % e.code)
             raise RuntimeError('unplayable: the server refused the stream (HTTP %d)' % e.code)
         except (urllib.error.URLError, OSError) as e:
+            # a network hiccup, not a verdict: the main loop retries like any
+            # other early pipeline death
             log('stream request: %r' % e)
-            raise RuntimeError('unplayable: could not fetch the stream (%s)' % type(e).__name__)
+            raise StreamError(type(e).__name__)
+
+    def show_error(self, text):
+        try:
+            with open(PLAYSTAT + '.err', 'w') as f: f.write(text)
+        except OSError: pass
 
     def kill(self):
         # ffmpeg first, so it is gone before its pipe closes and does not log
@@ -257,6 +268,10 @@ class Player:
                 except subprocess.TimeoutExpired:
                     p.kill(); p.wait()
         if self.resp:
+            # a pump thread blocked in a read must not hold up a stop or seek:
+            # shut the socket down under it before closing the response
+            try: self.resp.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+            except Exception: pass
             try: self.resp.close()
             except Exception: pass
             self.resp = None
@@ -351,6 +366,16 @@ class Player:
                 self.start()
             except RuntimeError as e:
                 log(str(e)); break
+            except StreamError as e:
+                self.kill()
+                retries += 1
+                if retries > RETRIES:
+                    log('giving up after %d attempts to fetch the stream' % RETRIES)
+                    self.show_error('Could not fetch the stream from the server.')
+                    break
+                log('stream not fetched (%s), retry %d/%d' % (e, retries, RETRIES))
+                time.sleep(2 * retries)
+                continue
             self.timeline('playing')
             tping = time.time()
             while self.p_fb.poll() is None:
