@@ -48,6 +48,7 @@ type Ring struct {
 	waitedT, endedT time.Time
 	ended           uint32 // field counter at End
 	seq             uint32 // header seq we last published
+	pubSeq          uint32 // the same, readable from Watch's goroutine
 	cadence         bool
 	cadenceField    uint32 // field of the previous cadence-controlled publication
 }
@@ -110,6 +111,7 @@ func (r *Ring) publish() {
 	atomic.StoreUint32(&r.hdr[2], r.slot)
 	atomic.StoreUint32(&r.hdr[0], magic)
 	r.seq = atomic.LoadUint32(&r.hdr[1]) + 1
+	atomic.StoreUint32(&r.pubSeq, r.seq)
 	atomic.StoreUint32(&r.hdr[1], r.seq)
 	r.ended = r.Field()
 	r.endedT = time.Now()
