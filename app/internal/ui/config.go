@@ -24,6 +24,7 @@ type Config struct {
 	Bitrate            int      `json:"bitrate"`               // transcode cap in kbit/s; 0 is the default
 	AudioBoost         int      `json:"audio_boost,omitempty"` // gain when the server folds surround to stereo; 0 is the default
 	Geometry           Geometry `json:"geometry"`              // where video goes on the raster (menus ignore it)
+	Crop               Crop     `json:"crop,omitempty"`        // what each playback starts cropping; nothing saved is off
 	ClientID           string   `json:"client_id"`
 	Token              string   `json:"token"` // the plex.tv account token
 	AccountName        string   `json:"account_name,omitempty"`

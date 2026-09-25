@@ -25,6 +25,10 @@ type Player struct {
 	Boost  func() int // the surround-to-stereo gain to ask for, read at each start
 	// Geometry is the presenter's picture area (PLEXFB_GEOMETRY), read at each start
 	Geometry func() string
+	// Crop is the presenter's crop, read at each start and written to
+	// CropFile (PLEXFB_CROP_FILE), which it watches: SetCrop changes it mid-play
+	Crop     func() Crop
+	CropFile string
 	Access   func() error // optional official-beta entitlement check
 }
 
@@ -119,6 +123,14 @@ func (p *Player) Start(ratingKey string, offset int) (*Session, error) {
 	}
 	if p.Geometry != nil {
 		cmd.Env = append(cmd.Env, "PLEXFB_GEOMETRY="+p.Geometry())
+	}
+	if p.Crop != nil && p.CropFile != "" {
+		// without the file the presenter would follow a stale one: no crop
+		if err := p.SetCrop(p.Crop()); err == nil {
+			cmd.Env = append(cmd.Env, "PLEXFB_CROP_FILE="+p.CropFile)
+		} else {
+			fmt.Fprintf(output, "crop: %v\n", err)
+		}
 	}
 	if err := cmd.Start(); err != nil {
 		if lf != nil {

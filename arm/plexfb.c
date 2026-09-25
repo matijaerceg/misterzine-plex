@@ -360,17 +360,85 @@ static void fit(const struct screen *s, double aspect, int sh, int *dx, int *dy,
 	*dw = w; *dh = h; *dx = s->l + ((aw - w) / 2 & ~1); *dy = s->t + ((ah - h) / 2 & ~1);
 }
 
-/* the whole frame, fitted to the picture area; frame planes are packed I420 */
+/* Crop, named by the file at PLEXFB_CROP_FILE: "off", "14:9" (the sides of
+ * anything wider than 14:9 go) or "fill" (whatever overhangs the picture
+ * area goes, so it has no borders: the sides of a wide picture on a 4:3
+ * area, the top and bottom of a narrow one). The app writes the file before
+ * playback and again when the viewer changes the crop; the reader thread
+ * reads it between frames. Keep the thresholds in step with Geometry.Cuts
+ * in app/internal/ui/crop.go (tools/testdata/crop_cases.txt). */
+enum { CROP_OFF, CROP_14_9, CROP_FILL };
+static const char *const crop_names[] = { "off", "14:9", "fill" };
+static int g_crop = CROP_OFF;
+static const char *g_crop_file;
+
+/* a crop's name, with nothing but white space around it: -1 if not one */
+static int parse_crop(const char *s)
+{
+	char word[8], end;
+	if (sscanf(s, " %7s %c", word, &end) != 1) return -1;
+	for (int i = 0; i < 3; i++)
+		if (!strcmp(word, crop_names[i])) return i;
+	return -1;
+}
+
+/* the crop the file names: -1 if it is missing or names none */
+static int read_crop(const char *path)
+{
+	char b[32];
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) return -1;
+	ssize_t n = read(fd, b, sizeof b - 1);
+	close(fd);
+	if (n <= 0) return -1;
+	b[n] = 0;
+	return parse_crop(b);
+}
+
+/* The part of a w x h frame of display aspect `aspect` that crop `mode`
+   keeps, centred and even where chroma needs it; returns that part's
+   display aspect. A picture within 1% of the target is left whole. */
+static double crop_rect(int mode, const struct screen *s, int w, int h, double aspect,
+                        int *cx, int *cy, int *cw, int *ch)
+{
+	*cx = 0; *cy = 0; *cw = w; *ch = h;
+	if (mode == CROP_OFF) return aspect;
+	double target = 14.0 / 9.0;
+	if (mode == CROP_FILL)          /* the area's shape as the viewer sees it */
+		target = (8.0 / 9.0) * (W - s->l - s->r) / ((H - s->t - s->b) * (s->width / 1000.0));
+	if (aspect > target * 1.01) {
+		*cw = 2 * (int)lround(w * target / aspect / 2);
+		if (*cw < 16) *cw = 16;
+		*cx = (w - *cw) / 2 & ~1;
+	} else if (mode == CROP_FILL && aspect < target / 1.01) {
+		*ch = 2 * (int)lround(h * aspect / target / 2);
+		if (*ch < 16) *ch = 16;
+		*cy = (h - *ch) / 2 & ~1;
+	} else
+		return aspect;
+	return aspect * *cw * h / ((double)w * *ch);
+}
+
+/* the frame, less what the crop cuts, fitted to the picture area; frame
+   planes are packed I420 */
 static void geometry_setup(struct geometry *g, int w, int h, double aspect)
 {
-	int dx, dy, dw, dh;
+	int dx, dy, dw, dh, cx, cy, cw, ch;
 	int w2 = (w + 1) / 2, h2 = (h + 1) / 2;
 	if (!(aspect > 0.25 && aspect < 4.0)) aspect = (double)w / h;
 	g->w = w; g->h = h; g->aspect = aspect;
-	fit(&g_screen, aspect, h, &dx, &dy, &dw, &dh);
-	plane_setup(&g->p[0], w, h, 0, 0, w, h, dx, dy, dw, dh, W, H, 16);
+	double shown = crop_rect(g_crop, &g_screen, w, h, aspect, &cx, &cy, &cw, &ch);
+	if (g_crop == CROP_FILL && (cw < w || ch < h)) {
+		/* cut to the area's shape: the whole area, whatever the rounding */
+		dx = g_screen.l; dy = g_screen.t;
+		dw = W - g_screen.l - g_screen.r; dh = H - g_screen.t - g_screen.b;
+	} else
+		fit(&g_screen, shown, ch, &dx, &dy, &dw, &dh);
+	plane_setup(&g->p[0], w, h, cx, cy, cw, ch, dx, dy, dw, dh, W, H, 16);
+	/* a side left whole keeps an odd last chroma sample; a cut one is even */
 	for (int i = 1; i < 3; i++)
-		plane_setup(&g->p[i], w2, h2, 0, 0, w2, h2, dx / 2, dy / 2, dw / 2, dh / 2, W / 2, H / 2, 128);
+		plane_setup(&g->p[i], w2, h2, cx / 2, cy / 2, (cw + 1) / 2, (ch + 1) / 2,
+		            dx / 2, dy / 2, dw / 2, dh / 2, W / 2, H / 2, 128);
 }
 
 static size_t geometry_frame_bytes(const struct geometry *g)
@@ -581,6 +649,9 @@ static void present_loop(double fps, uint32_t seq)
  *   PLEXFB_GEOMETRY "left,top,right,bottom,width": the picture area from the
  *                 app's calibration, edges in pixels and lines inside the
  *                 raster's, width in thousandths (default "0,0,0,0,1000")
+ *   PLEXFB_CROP_FILE a file naming the crop, "off", "14:9" or "fill" (see
+ *                 crop_rect); read at the start and every 0.1 s after, so a
+ *                 change shows within a few frames, and at once when paused
  *
  * The gate alone only holds audio back. A stall that keeps the audio from
  * aplay for a while (a late wakeup, a blocked write) would leave every later
@@ -643,6 +714,36 @@ static int skip_bytes(size_t n)
 	return 1;
 }
 
+static void log_picture(const char *what)
+{
+	const struct plane_map *y = &g_geo.p[0];
+	fprintf(stderr, "plexfb: %s %dx%d, aspect %.3f, crop %s %dx%d at %d,%d -> %dx%d at %d,%d "
+	        "(area %d,%d,%d,%d, width %d)%s\n",
+	        what, g_geo.w, g_geo.h, g_geo.aspect, crop_names[g_crop], y->cw, y->ch, y->cx, y->cy,
+	        y->dw, y->dh, y->dx, y->dy, g_screen.l, g_screen.t, g_screen.r, g_screen.b, g_screen.width,
+	        y->groups || y->cw == y->dw ? "" : " (C scaler)");
+}
+
+/* reader thread: follow the crop file. Frames already in the ring keep the
+   crop they were scaled with, a frame or two; while the picture is paused
+   they and the one on screen are scaled again, so the change shows (a field
+   may show it half drawn). */
+static void crop_follow(int vw, int vh, double vaspect)
+{
+	static double next;
+	if (!g_crop_file || now() < next) return;
+	next = now() + 0.1;
+	int c = read_crop(g_crop_file);
+	if (c < 0 || c == g_crop) return;
+	g_crop = c;
+	geometry_setup(&g_geo, vw, vh, vaspect);
+	log_picture("crop changed:");
+	if (!g_pause) return;
+	for (unsigned i = ring_shown == ring_base ? ring_shown : ring_shown - 1; i != ring_filled; i++)
+		scale_frame(&g_geo, ram_slot(i % RING), map + BUF_OFF(i % RING));
+	__sync_synchronize();
+}
+
 static void *avi_reader(void *arg)
 {
 	(void)arg;
@@ -699,10 +800,7 @@ static void *avi_reader(void *arg)
 				if (!sized && !vaspect) vaspect = 4.0 / 3.0;
 				geometry_setup(&g_geo, vw, vh, vaspect);
 				vneed = geometry_frame_bytes(&g_geo);
-				const struct plane_map *y = &g_geo.p[0];
-				fprintf(stderr, "plexfb: picture %dx%d, aspect %.3f -> %dx%d at %d,%d (area %d,%d,%d,%d, width %d)%s\n",
-				        vw, vh, g_geo.aspect, y->dw, y->dh, y->dx, y->dy, g_screen.l, g_screen.t, g_screen.r,
-				        g_screen.b, g_screen.width, y->groups || y->cw == y->dw ? "" : " (C scaler)");
+				log_picture("picture");
 				ready = 1;
 			}
 			if (sz && sz != vneed) {
@@ -710,7 +808,11 @@ static void *avi_reader(void *arg)
 				if (!skip_bytes(padded)) break;
 				continue;
 			}
-			while (ring_filled - ring_shown >= RING - 2) usleep(500);
+			crop_follow(vw, vh, vaspect);
+			while (ring_filled - ring_shown >= RING - 2) {
+				usleep(500);
+				crop_follow(vw, vh, vaspect);   /* paused, or the screen is behind */
+			}
 			uint8_t *dst = ram_slot(ring_filled % RING);
 			if (!sz) {
 				/* an empty chunk is ffmpeg holding the frame over a gap in the
@@ -870,6 +972,13 @@ int main(int argc, char **argv)
 		if (getenv("PLEXFB_GEOMETRY") && !parse_screen(getenv("PLEXFB_GEOMETRY"), &g_screen))
 			fprintf(stderr, "plexfb: PLEXFB_GEOMETRY \"%s\" not understood, using the whole screen\n",
 			        getenv("PLEXFB_GEOMETRY"));
+		g_crop_file = getenv("PLEXFB_CROP_FILE");
+		if (g_crop_file && *g_crop_file) {
+			int c = read_crop(g_crop_file);
+			if (c >= 0) g_crop = c;
+			else fprintf(stderr, "plexfb: %s names no crop (off, 14:9 or fill), not cropping\n", g_crop_file);
+		} else
+			g_crop_file = NULL;
 		if (fcntl(0, F_SETPIPE_SZ, 4 << 20) < 0) perror("F_SETPIPE_SZ (ignored)");
 		signal(SIGUSR1, on_usr1);
 		signal(SIGUSR2, on_usr2);

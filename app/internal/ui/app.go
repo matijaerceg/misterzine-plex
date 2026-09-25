@@ -92,7 +92,8 @@ type App struct {
 	later      chan func()
 	seasonData *seasonData // one selected season, shared with its opening page
 	scr        *gfx.Canvas
-	osd        OSD // the playback overlay: the core's plane
+	osd        OSD  // the playback overlay: the core's plane
+	crop       Crop // the playback's crop: Options' at the start, then the playback menu's
 
 	stack  []Screen
 	dirty  bool
@@ -319,6 +320,9 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 	a.theme.Stop() // ALSA is single-client: wait for aplay before the launcher
 	defer a.syncTheme()
 	a.Player.Reap()
+	// each playback starts with Options' crop; one changed in the playback
+	// menu holds through the queue (autoplay, Prev, Next) and ends with it
+	a.crop = a.Cfg.Crop.valid()
 	for {
 		a.Log.Printf("play %s (%s) at %d", it.Title, it.RatingKey, offset)
 		a.Starting = time.Now()

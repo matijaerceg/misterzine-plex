@@ -148,6 +148,7 @@ func main() {
 	player.Access = func() error { return beta.Check(filepath.Dir(*cfgPath)) }
 	app := ui.New(client, r, player, lg)
 	player.Geometry = app.VideoGeometry
+	player.Crop, player.CropFile = app.VideoCrop, "/tmp/plexfb.crop"
 	watching := make(chan struct{})
 	go r.Watch(lg.Printf, app.WakeUp, watching)
 	defer close(watching)

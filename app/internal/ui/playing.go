@@ -81,6 +81,7 @@ type Playing struct {
 type listMode struct {
 	kind  string
 	items []string
+	vals  []string // More: each row's value, on the right
 	cur   int
 	set   int
 	off   int // subtitles: item 0 is Off
@@ -157,7 +158,7 @@ const (
 	SkipHold  = 8 * time.Second // the skip button stays this long after the marker starts
 )
 
-var osdButtons = []string{"-10", "Pause", "+10", "Prev", "Next", "Audio", "Subs"}
+var osdButtons = []string{"-10", "Pause", "+10", "Prev", "Next", "Audio", "Subs", "More"}
 
 // NewPlaying makes the controller for an item; send writes to the launcher's FIFO.
 func NewPlaying(app *App, it *plex.Item, queue []*plex.Item, idx int, send func(string)) *Playing {
@@ -288,10 +289,65 @@ func (p *Playing) openList(kind string) {
 		}
 	}
 	l.cur = max(l.set, 0)
+	p.showList(l)
+}
+
+// showList puts a list up, opened on its cursor.
+func (p *Playing) showList(l *listMode) {
 	l.window()
 	l.at = l.to // open on the cursor, no slide
 	p.list = l
 	p.dirty = true
+}
+
+// openMore opens the playback menu: a row per setting with its value, OK
+// opens a row's choices. What it changes lasts until the playback ends.
+func (p *Playing) openMore() {
+	p.showList(&listMode{kind: "More", items: []string{"Crop"}, vals: []string{p.app.crop.Label()}, set: -1})
+}
+
+// openCrop opens the crop choices, the one in force ticked.
+func (p *Playing) openCrop() {
+	l := &listMode{kind: "Crop", set: p.app.crop.index()}
+	for _, c := range Crops {
+		l.items = append(l.items, c.Label)
+	}
+	l.cur = l.set
+	p.showList(l)
+}
+
+// choose acts on a list's cursor: a track restarts the stream with it, a
+// row of More opens its choices, a crop shows within a few frames.
+func (p *Playing) choose(l *listMode) {
+	switch l.kind {
+	case "More":
+		p.openCrop() // its one row
+	case "Crop":
+		p.app.setCrop(Crops[l.cur].Mode)
+		p.list = nil
+	default:
+		p.app.selectStream(p.item, l.kind, l.cur-l.off)
+		p.list = nil
+		// the transcoder starts over with the new track from here
+		p.seekTo_(p.pos)
+	}
+}
+
+// closeList goes back a level: from a row's choices to More, from any
+// other list to the controls.
+func (p *Playing) closeList() {
+	if p.list.kind == "Crop" {
+		p.openMore()
+		return
+	}
+	p.list = nil
+}
+
+// cropMatters reports whether any crop would cut this item's picture; an
+// item whose shape is unknown gets the benefit of the doubt.
+func (p *Playing) cropMatters() bool {
+	g := p.app.Cfg.Geometry
+	return p.item.Aspect <= 0 || g.Cuts(Crop14x9, p.item.Aspect) || g.Cuts(CropFill, p.item.Aspect)
 }
 
 // Key handles a pad event during playback; returns true when playback
@@ -340,14 +396,11 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			l.window()
 		case input.Back, input.Left, input.Right:
 			if !ev.Repeat {
-				p.list = nil
+				p.closeList()
 			}
 		case input.Enter:
 			if !ev.Repeat {
-				p.app.selectStream(p.item, l.kind, l.cur-l.off)
-				p.list = nil
-				// the transcoder starts over with the new track from here
-				p.seekTo_(p.pos)
+				p.choose(l)
 			}
 		}
 		p.shownAt = now
@@ -441,6 +494,10 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 		case "Subs":
 			if len(p.item.Subs) > 0 {
 				p.openList("Subtitles")
+			}
+		case "More":
+			if p.cropMatters() {
+				p.openMore()
 			}
 		}
 	case input.Left, input.Right:
@@ -687,6 +744,8 @@ func (p *Playing) dimmed(i int) bool {
 		return len(p.item.Audio) < 2
 	case "Subs":
 		return len(p.item.Subs) == 0
+	case "More":
+		return !p.cropMatters() // crop is all it holds
 	}
 	return false
 }
@@ -891,6 +950,9 @@ func (p *Playing) uploadList(osd OSD) {
 		c.Text(MenuX, y, f.Body, gfx.GreyHi, f.Body.Fit(item, OsdListW-MenuX-52))
 		if i == l.set {
 			tick(c, OsdListW-30, y+f.Body.Height()/2, gfx.GreyHi)
+		}
+		if i < len(l.vals) {
+			c.TextRight(OsdListW-OsdListPad, y, f.Body, gfx.GreyLo, l.vals[i])
 		}
 	}
 	l.base, l.uploaded, l.loaded = base, rows, true

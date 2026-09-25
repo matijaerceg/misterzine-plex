@@ -19,11 +19,13 @@ Detailed behavior and display settings. For everyday help, see the
   With the controls hidden, left/right shows a strip with the title, the
   progress bar and the times, and works the same way: taps and holds add
   up into one seek. The last frame stays on screen until the new position
-  starts playing.
+  starts playing. **More** holds the crop for the playback under way (see
+  Display setup); it is dimmed when no crop would change the picture.
 - The menu lists Home, Search, the movie and TV libraries, and Options. A long
   list of libraries scrolls, and the menu opens on the library visited last.
-- Options contains video mode, theme music, navigation taps, autoplay, bitrate,
-  downmix boost, the 4:3 filter, server selection and sign-out. The 4:3 filter applies to the
+- Options contains video mode, video geometry and crop, theme music, navigation
+  taps, autoplay, bitrate, downmix boost, the 4:3 filter, server selection and
+  sign-out. The 4:3 filter applies to the
   home rows, search and every library view. Movies and episodes are judged by
   their own picture; a show by its first episode. Each TV library is read once
   for that, the first time the filter needs it, and the answers are kept in the
@@ -44,7 +46,8 @@ already received.
 Frames are decoded with H.264's loop filter on, which keeps block edges from
 building up between keyframes in dark scenes. The presenter fits each frame
 to the 4:3 screen, or to the area set under **Video geometry** (letterbox or
-pillarbox, honouring non-square pixels) as it copies it into the frame ring. 50 and 60 fps video is requested from the
+pillarbox, honouring non-square pixels, less what **Video crop** cuts) as it
+copies it into the frame ring. 50 and 60 fps video is requested from the
 server at half its frame rate (25 or 29.97 fps), which the board can keep up
 with.
 
@@ -131,6 +134,20 @@ the edges, with black bars where its shape differs from the area's. Edges
 move in by up to a sixth of the screen, and the width by up to 15% either
 way. Bringing the top or bottom edge in scales 480 lines into fewer, which
 softens the picture slightly. One calibration serves every video output.
+
+**Options > Video crop** sets how much of a picture that does not match the
+screen is cut away. **Off** shows all of it, with black bars. **14:9** cuts the
+sides of anything wider than 14:9, the compromise broadcasters used for
+widescreen on 4:3 sets: thin bars remain and little is lost. **Fill** cuts
+whatever overhangs the screen (or the area set under Video geometry), so there
+are no bars: a 16:9 picture loses a quarter of its width, which also removes
+the side bars of 4:3 shows stored in 16:9 files. A picture narrower than the
+screen loses its top and bottom instead. Pictures within 1% of the target
+shape are left whole. The crop is enlarged from the frame Plex sends, so it
+is slightly softer, and a crop can cut the ends of long subtitle lines, which
+Plex draws across the full width. Each playback starts with this setting;
+**More > Crop** in the playback controls changes it for that playback,
+including the episodes that follow it, and the change shows at once.
 
 For HDMI scaling and aspect settings, see [HDMI setup](HDMI.md).
 PAL is not yet supported. RGB-only CRTs are not detected automatically.

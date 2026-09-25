@@ -101,6 +101,129 @@ static void default_unchanged(void)
 	CHECK(!other && same > 500000, "default placement changed for %d frame shapes (%d unchanged)", other, same);
 }
 
+/* tools/testdata/crop_cases.txt, which the app's Go tests read too (beside
+   this source, or at PLEXFB_CROP_CASES) */
+static void crop_cases(void)
+{
+	char path[1024];
+	const char *slash = strrchr(__FILE__, '/');
+	snprintf(path, sizeof path, "%.*stestdata/crop_cases.txt", slash ? (int)(slash - __FILE__ + 1) : 0, __FILE__);
+	if (getenv("PLEXFB_CROP_CASES")) snprintf(path, sizeof path, "%s", getenv("PLEXFB_CROP_CASES"));
+	FILE *f = fopen(path, "r");
+	CHECK(f != NULL, "cannot open %s", path);
+	if (!f) return;
+	char line[256];
+	int n = 0;
+	while (fgets(line, sizeof line, f)) {
+		struct screen s;
+		char name[8];
+		double num, den;
+		int fw, fh, x, y, w, h, cx, cy, cw, ch;
+		if (sscanf(line, "%d %d %d %d %d %7s %d %d %lf/%lf %d %d %d %d", &s.l, &s.t, &s.r, &s.b, &s.width,
+		           name, &fw, &fh, &num, &den, &x, &y, &w, &h) != 14) continue;
+		char text[64];
+		snprintf(text, sizeof text, "%d,%d,%d,%d,%d", s.l, s.t, s.r, s.b, s.width);
+		CHECK(parse_screen(text, &g_screen), "%s: not accepted", text);
+		int mode = parse_crop(name);
+		CHECK(mode >= 0, "crop \"%s\" not understood", name);
+		if (mode < 0) continue;
+		crop_rect(mode, &g_screen, fw, fh, num / den, &cx, &cy, &cw, &ch);
+		CHECK(cx == x && cy == y && cw == w && ch == h, "%s %s %dx%d aspect %.4f: kept %dx%d at %d,%d, expected %dx%d at %d,%d",
+		      text, name, fw, fh, num / den, cw, ch, cx, cy, w, h, x, y);
+		/* what fill cuts, it fits to the whole area: no border at all */
+		static struct geometry g;
+		g_crop = mode;
+		geometry_setup(&g, fw, fh, num / den);
+		g_crop = CROP_OFF;
+		const struct plane_map *p = &g.p[0];
+		if (mode == CROP_FILL && (w < fw || h < fh))
+			CHECK(p->dx == s.l && p->dy == s.t && p->dw == W - s.l - s.r && p->dh == H - s.t - s.b,
+			      "%s fill %dx%d: %dx%d at %d,%d, not the area", text, fw, fh, p->dw, p->dh, p->dx, p->dy);
+		CHECK(p->cx == cx && p->cy == cy && p->cw == cw && p->ch == ch && g.p[1].cx == cx / 2 && g.p[1].cy == cy / 2,
+		      "%s %s %dx%d: planes not set to the kept part", text, name, fw, fh);
+		n++;
+	}
+	fclose(f);
+	CHECK(n >= 20, "only %d crop cases read from %s", n, path);
+	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
+}
+
+static void crop_words(void)
+{
+	CHECK(parse_crop("off") == CROP_OFF && parse_crop("14:9\n") == CROP_14_9 && parse_crop("  fill \n") == CROP_FILL,
+	      "a crop name not understood");
+	const char *bad[] = { "", "\n", "Fill", "fill x", "14:9x", "4:3", "fillfillfill" };
+	for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++)
+		CHECK(parse_crop(bad[i]) == -1, "crop \"%s\" understood", bad[i]);
+	char path[] = "/tmp/plexfb_crop_XXXXXX";
+	int fd = mkstemp(path);
+	CHECK(fd >= 0 && write(fd, "fill\n", 5) == 5, "cannot write %s", path);
+	if (fd >= 0) close(fd);
+	CHECK(read_crop(path) == CROP_FILL, "crop file not read");
+	unlink(path);
+	CHECK(read_crop(path) == -1, "a missing crop file read");
+}
+
+static void fill_random(uint8_t *f, int w, int h, unsigned seed);
+
+static void set_crop_file(const char *path, const char *text)
+{
+	FILE *f = fopen(path, "w");
+	if (f) { fputs(text, f); fclose(f); }
+}
+
+/* A crop change while paused scales the frames in the ring again from the
+   ones kept in RAM, the one on screen included, and never the slot a
+   previous presenter left up; while playing only the geometry changes. */
+static void crop_follow_paused(void)
+{
+	static uint8_t mem[0x7E0000];
+	uint8_t *want = malloc(SLOT_BYTES), *before = malloc(SLOT_BYTES * RING);
+	int w = 720, h = 404;
+	double a = 720.0 / 404;
+	map = mem;
+	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
+	g_crop = CROP_OFF;
+	geometry_setup(&g_geo, w, h, a);
+	memset(map + BUF_OFF(0), 0x5A, SLOT_BYTES);          /* the previous presenter's frame */
+	ring_base = 1; ring_shown = 2; ring_filled = 4;       /* slot 1 on screen, 2 and 3 ahead */
+	for (unsigned i = 1; i < 4; i++) {
+		fill_random(ram_slot(i), w, h, i);
+		scale_frame(&g_geo, ram_slot(i), map + BUF_OFF(i));
+	}
+	char path[] = "/tmp/plexfb_crop_XXXXXX";
+	int fd = mkstemp(path);
+	if (fd >= 0) close(fd);
+	set_crop_file(path, "fill\n");
+	g_crop_file = path;
+	g_pause = 1;
+	crop_follow(w, h, a);
+	CHECK(g_crop == CROP_FILL && g_geo.p[0].cw == 538 && g_geo.p[0].dw == W && g_geo.p[0].dh == H,
+	      "paused: crop %d, %d wide -> %dx%d", g_crop, g_geo.p[0].cw, g_geo.p[0].dw, g_geo.p[0].dh);
+	int stale = 0, touched = 0;
+	for (unsigned i = 1; i < 4; i++) {
+		scale_frame(&g_geo, ram_slot(i), want);
+		stale += memcmp(want, map + BUF_OFF(i), SLOT_BYTES) != 0;
+	}
+	for (size_t i = 0; i < SLOT_BYTES; i++) touched += map[BUF_OFF(0) + i] != 0x5A;
+	CHECK(!stale && !touched, "paused: %d ring frames not scaled again, %d bytes of the old frame touched", stale, touched);
+	/* playing: frames in the ring keep the crop they have */
+	for (unsigned i = 0; i < RING; i++) memcpy(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES);
+	set_crop_file(path, "14:9\n");
+	g_pause = 0;
+	usleep(120000);                                       /* it looks every 0.1 s */
+	crop_follow(w, h, a);
+	int moved = 0;
+	for (unsigned i = 0; i < RING; i++) moved += memcmp(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES) != 0;
+	CHECK(g_crop == CROP_14_9 && g_geo.p[0].cw == 628 && !moved, "playing: crop %d, %d wide, %d ring frames rewritten",
+	      g_crop, g_geo.p[0].cw, moved);
+	unlink(path);
+	g_crop_file = NULL; g_crop = CROP_OFF;
+	ring_base = ring_shown = ring_filled = 0;
+	map = NULL;
+	free(want); free(before);
+}
+
 static void screen_settings(void)
 {
 	struct screen s = { 0, 0, 0, 0, 1000 };
@@ -155,7 +278,8 @@ static void flat_and_borders(int w, int h, double aspect)
 			uint8_t u = out_u(slot)[r * (W / 2) + x], v = out_v(slot)[r * (W / 2) + x];
 			if (in ? (u != 90 || v != 160) : (u != 128 || v != 128)) { if (in) bad_pic++; else bad_border++; }
 		}
-	CHECK(!bad_pic && !bad_border, "%dx%d flat frame: %d picture and %d border samples off", w, h, bad_pic, bad_border);
+	CHECK(!bad_pic && !bad_border, "%dx%d flat frame (crop %s): %d picture and %d border samples off",
+	      w, h, crop_names[g_crop], bad_pic, bad_border);
 	free(f); free(slot);
 }
 
@@ -180,7 +304,13 @@ static void ramps(int w, int h, double aspect)
 		for (int r = q->dy + 1; r < q->dy + q->dh; r++)
 			if (out_u(slot)[r * (W / 2) + x] < out_u(slot)[(r - 1) * (W / 2) + x]) back++;
 	uint8_t first = out_y(slot)[p->dy * W + p->dx], last = out_y(slot)[p->dy * W + p->dx + p->dw - 1];
-	CHECK(!back && first == 16 && last == 235, "%dx%d ramps: %d steps backwards, ends %u..%u", w, h, back, first, last);
+	/* the picture's ends are the kept part's (16..235 for the whole frame):
+	   exactly, or within a step where a shrink blends in the neighbour */
+	int lo = f[p->cx], hi = f[p->cx + p->cw - 1];
+	int ends = p->cw <= p->dw ? first == lo && last == hi : abs(first - lo) <= 1 && abs(last - hi) <= 1;
+	if (p->cw == w) ends = ends && lo == 16 && hi == 235;
+	CHECK(!back && ends, "%dx%d ramps (crop %s): %d steps backwards, ends %u..%u of %d..%d",
+	      w, h, crop_names[g_crop], back, first, last, lo, hi);
 	free(f); free(slot);
 }
 
@@ -274,7 +404,8 @@ static void timing(int w, int h, double aspect)
 		g_scale_c = c;
 		double t = now();
 		for (int i = 0; i < 50; i++) scale_frame(&g, f, slot);
-		printf("  %dx%d -> %dx%d: %s %.2f ms/frame\n", w, h, g.p[0].dw, g.p[0].dh, c ? "C   " : "fast", (now() - t) * 1e3 / 50);
+		printf("  %dx%d crop %s -> %dx%d: %s %.2f ms/frame\n", w, h, crop_names[g_crop], g.p[0].dw, g.p[0].dh,
+		       c ? "C   " : "fast", (now() - t) * 1e3 / 50);
 	}
 	g_scale_c = 0;
 	free(f); free(slot);
@@ -291,22 +422,30 @@ int main(int argc, char **argv)
 	fits(720, 480, 16.0 / 9.0, 0, 60, 720, 360);        /* anamorphic 16:9 DVD */
 	screen_settings();
 
+	crop_cases();
+	crop_words();
+	crop_follow_paused();
+
 	headers();
 	crop();
 	passthrough();
 	int shapes[][2] = { {640, 480}, {644, 480}, {720, 404}, {720, 306}, {480, 360}, {576, 480}, {270, 480},
 	                    {642, 482}, {641, 481}, {1280, 720}, {352, 240} };
-	/* the whole raster, then a calibrated area: edges in, both axes resampled */
-	struct screen areas[] = { { 0, 0, 0, 0, 1000 }, { 16, 12, 18, 10, 985 } };
+	/* the whole raster, then calibrated areas: edges in, both axes resampled;
+	   a narrow one, where fill cuts the sides of 4:3 too; each crop in each */
+	struct screen areas[] = { { 0, 0, 0, 0, 1000 }, { 16, 12, 18, 10, 985 }, { 120, 0, 120, 0, 1000 } };
 	for (unsigned a = 0; a < sizeof areas / sizeof *areas; a++) {
 		g_screen = areas[a];
-		for (unsigned i = 0; i < sizeof shapes / sizeof *shapes; i++) {
-			int w = shapes[i][0], h = shapes[i][1];
-			flat_and_borders(w, h, (double)w / h);
-			ramps(w, h, (double)w / h);
-			neon_matches_c(w, h, (double)w / h);
+		for (g_crop = CROP_OFF; g_crop <= CROP_FILL; g_crop++) {
+			for (unsigned i = 0; i < sizeof shapes / sizeof *shapes; i++) {
+				int w = shapes[i][0], h = shapes[i][1];
+				flat_and_borders(w, h, (double)w / h);
+				ramps(w, h, (double)w / h);
+				neon_matches_c(w, h, (double)w / h);
+			}
+			neon_matches_c(720, 480, 16.0 / 9.0);
 		}
-		neon_matches_c(720, 480, 16.0 / 9.0);
+		g_crop = CROP_OFF;
 	}
 	g_screen = areas[0];
 #ifdef HAVE_NEON
@@ -317,6 +456,10 @@ int main(int argc, char **argv)
 		timing(644, 480, 644.0 / 480);
 		timing(720, 404, 720.0 / 404);
 		timing(640, 360, 16.0 / 9.0);
+		g_crop = CROP_FILL;
+		timing(720, 404, 720.0 / 404);
+		timing(720, 300, 720.0 / 300);
+		g_crop = CROP_OFF;
 	}
 	printf("%d checks, %d failed\n", checks, fails);
 	return fails != 0;

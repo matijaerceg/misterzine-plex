@@ -71,6 +71,9 @@ func (o *Options) items() []option {
 			return "480i (CRT)"
 		}, do: o.app.chooseVideo},
 		{label: "Video geometry", do: func() { o.app.Push(NewCalibrate(o.app)) }},
+		{label: "Video crop", val: func() string { return cfg.Crop.Label() }, step: func(d int) {
+			cfg.Crop = Crops[max(0, min(len(Crops)-1, cfg.Crop.index()+d))].Mode
+		}},
 		{label: "Theme music", get: func() bool { return !cfg.NoTheme }, set: func(v bool) { cfg.NoTheme = !v }, after: o.app.syncTheme},
 		{label: "Navigation sounds", get: func() bool { return !cfg.NoTaps }, set: func(v bool) { cfg.NoTaps = !v }},
 	}
