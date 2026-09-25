@@ -449,6 +449,7 @@ class UpdateTests(unittest.TestCase):
         with patch.object(manager.os, 'open', fake_open), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             console = manager.GraphicsConsole(lambda: active[0], ioctl)
+            console.check(first=True)
             # Mid-run the foreground moves to another console, which is then put in text mode.
             active[0] = str(second)
             modes[str(second)] = manager.KD_TEXT
@@ -462,24 +463,57 @@ class UpdateTests(unittest.TestCase):
         calls.clear()
         modes[str(second)] = manager.KD_GRAPHICS   # a console already in graphics mode is left alone
         with patch.object(manager.os, 'open', fake_open), contextlib.redirect_stdout(io.StringIO()):
-            manager.GraphicsConsole(lambda: str(second), ioctl).release()
+            quiet = manager.GraphicsConsole(lambda: str(second), ioctl)
+            quiet.check(first=True)
+            quiet.release()
         self.assertEqual(calls, [])
+        # A console that cannot be named is never touched.
+        with patch.object(manager.os, 'open', fake_open), contextlib.redirect_stdout(io.StringIO()) as out:
+            unnamed = manager.GraphicsConsole(lambda: None, ioctl)
+            unnamed.check(first=True)
+            unnamed.release()
+        self.assertEqual(calls, [])
+        self.assertIn('console unknown', out.getvalue())
+        self.assertIsNone(manager.active_console(self.card / 'missing'))
+        # A stop right after the switch still leaves the change on record.
+        modes[str(first)] = manager.KD_TEXT
+        def interrupted_ioctl(fd, request, arg):
+            ioctl(fd, request, arg)
+            if request == manager.KDSETMODE:
+                raise KeyboardInterrupt()
+        calls.clear()
+        with patch.object(manager.os, 'open', fake_open), contextlib.redirect_stdout(io.StringIO()):
+            stopped = manager.GraphicsConsole(lambda: str(first), interrupted_ioctl)
+            with self.assertRaises(KeyboardInterrupt):
+                stopped.check(first=True)
+            stopped.ioctl = ioctl
+            stopped.release()
+        self.assertEqual(calls, [('tty2', manager.KD_GRAPHICS), ('tty2', manager.KD_TEXT)])
 
     def test_a_failed_launch_still_resumes_holders_and_the_console(self):
         sleeper = subprocess.Popen(['sleep', '30'])
         self.addCleanup(sleeper.kill)
         released = []
         class Console:
+            def check(self, first=False):
+                pass
             def release(self):
                 released.append(True)
-        state = lambda: (Path('/proc') / str(sleeper.pid) / 'stat').read_text().split(') ')[1][0]
+        def state(want=None):
+            # Signals land asynchronously; give the state a moment to settle.
+            for _ in range(100):
+                s = (Path('/proc') / str(sleeper.pid) / 'stat').read_text().split(') ')[1][0]
+                if want is None or (s == 'T') == (want == 'T'):
+                    return s
+                time.sleep(0.01)
+            return s
         with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(OSError):
                 with manager.screen_to_ourselves(lambda: [(sleeper.pid, 'sleep')], Console):
-                    self.assertEqual(state(), 'T')
+                    self.assertEqual(state('T'), 'T')
                     raise OSError('could not start the app')
         self.assertEqual(released, [True])
-        self.assertNotEqual(state(), 'T')
+        self.assertNotEqual(state('S'), 'T')
         self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
         # A console that cannot even be set up still leaves nothing paused.
         def broken():
@@ -488,7 +522,7 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 with manager.screen_to_ourselves(lambda: [(sleeper.pid, 'sleep')], broken):
                     pass
-        self.assertNotEqual(state(), 'T')
+        self.assertNotEqual(state('S'), 'T')
 
     def test_framebuffer_holders_exclude_main_and_ourselves(self):
         proc = self.card / 'proc'

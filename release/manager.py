@@ -754,12 +754,14 @@ KDSETMODE, KDGETMODE, KD_TEXT, KD_GRAPHICS = 0x4B3A, 0x4B3B, 0, 1
 
 
 def active_console(sysfs=Path('/sys/class/tty/tty0/active')):
-    """The foreground virtual console as a stable path such as /dev/tty2."""
+    """The foreground virtual console as a stable path such as /dev/tty2, or
+    None when it cannot be named: /dev/tty0 follows the foreground, so it
+    could not be restored reliably."""
     try:
         name = sysfs.read_text().strip()
     except OSError:
-        return '/dev/tty0'
-    return '/dev/' + name if re.fullmatch(r'tty[0-9]+', name) else '/dev/tty0'
+        return None
+    return '/dev/' + name if re.fullmatch(r'tty[1-9][0-9]*', name) else None
 
 
 class GraphicsConsole:
@@ -779,10 +781,13 @@ class GraphicsConsole:
         self.console = console
         self.changed = {}      # console device -> mode to put back
         self.told = 0
-        self.check(first=True)
 
     def check(self, first=False):
         path = self.console()
+        if path is None:
+            if first:
+                trace('console unknown; left as it is')
+            return
         name = os.path.basename(path)
         try:
             fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
@@ -794,8 +799,10 @@ class GraphicsConsole:
             mode = bytearray(4)
             self.ioctl(fd, KDGETMODE, mode)
             if mode[0] == KD_TEXT:
-                self.ioctl(fd, KDSETMODE, KD_GRAPHICS)
+                # Recorded before the switch, so a stop between the two still
+                # puts it back (restoring a mode it already has is harmless).
                 self.changed.setdefault(path, KD_TEXT)
+                self.ioctl(fd, KDSETMODE, KD_GRAPHICS)
                 if self.told < 5:
                     self.told += 1
                     trace('console %s was in text mode and would draw over the picture; graphics mode while Plex runs' % name)
@@ -831,7 +838,8 @@ def screen_to_ourselves(holders=fb_holders, console=GraphicsConsole):
     paused, guard = PausedHolders(), None
     try:
         paused.pause(holders())
-        guard = console()
+        guard = console()          # no side effects until check()
+        guard.check(first=True)
         yield guard
     finally:
         with contextlib.suppress(ValueError):   # only the main thread may
