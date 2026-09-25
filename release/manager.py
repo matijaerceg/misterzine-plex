@@ -66,6 +66,66 @@ def repair_menu_entry(card):
     menu_entries(card)
 
 
+ZAPAROO_ENTRY = 'misterzine-plex.toml'
+
+
+def reload_zaparoo(card):
+    """Ask a running Zaparoo service to re-read its launchers, so the entry
+    appears without a reboot. Best effort: no Zaparoo, no wait beyond 15 s."""
+    script = card / 'Scripts/zaparoo.sh'
+    if not script.is_file():
+        return
+    try:
+        subprocess.run([str(script), '-reload'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def zaparoo_entry(card, enable=True, folder=None, reload=None):
+    """List Plex under Other in Zaparoo, pointing at the selected release.
+
+    Zaparoo does not scan _Other; its Other list is its built-ins plus custom
+    launchers, which it also reads from files in zaparoo/launchers. This file
+    is ours alone, rewritten whenever the selected release changes and removed
+    on uninstall. Nothing is written when Zaparoo is not installed. A pre-beta.4
+    watcher cannot start the app from a direct core load, so none is listed
+    for one. A launcher with the same id in Zaparoo's own config.toml wins."""
+    reload = reload or reload_zaparoo
+    root = card / 'misterzine-plex'
+    zaparoo = card / 'zaparoo'
+    launchers = zaparoo / 'launchers'
+    path = launchers / ZAPAROO_ENTRY
+    for place in (zaparoo, launchers, path):
+        if place.is_symlink():
+            return
+    if not enable or legacy_watcher(root) or not (root / 'active.json').is_file() and folder is None:
+        if path.is_file():
+            path.unlink()
+            reload(card)
+        return
+    if not zaparoo.is_dir():
+        return
+    load = core_file(root, folder).relative_to(card).with_suffix('').as_posix()
+    body = ('# MisterZine Plex Core in Zaparoo\'s Other list. Written by the Plex installer and\n'
+            '# rewritten on every update; do not edit. Uninstalling Plex removes it.\n'
+            '[[launchers.custom]]\n'
+            'id = "misterzine-plex"\n'
+            'kind = "virtual_system"\n'
+            'backend = "mister_core"\n'
+            'name = "MisterZine Plex Core"\n'
+            'category = "Other"\n'
+            'load_path = ' + json.dumps(load) + '\n').encode()
+    try:
+        if path.read_bytes() == body:
+            return
+    except OSError:
+        pass
+    launchers.mkdir(exist_ok=True)
+    atomic(path, body)
+    reload(card)
+
+
 def menu_entries(card, enable=True, folder=None):
     root = card / 'misterzine-plex'
     startup = card / 'linux/user-startup.sh'
@@ -93,6 +153,7 @@ def menu_entries(card, enable=True, folder=None):
     if enable or startup.exists():
         atomic(startup, text.encode())
         startup.chmod(0o755)
+    zaparoo_entry(card, enable, folder)
 
 
 def start_menu_launcher(card):
@@ -266,6 +327,29 @@ def install(card, package, archive=None):
     configure_channel(root, manifest)
     start_menu_launcher(card)
     print('Installed ' + ident + '. Launch MisterZine Plex Core from the main menu.')
+
+
+def prune_releases(root):
+    """Delete release folders other than the current and previous selection.
+
+    Every update added a folder of about 14 MB and none was ever removed. The
+    previous release stays for Rollback. Call only once a new release is known
+    to start, never while a failed update may still restore an older one."""
+    state = read_state(root)
+    keep = {state.get('current'), state.get('previous')} - {None}
+    folder = root / 'releases'
+    if folder.is_symlink() or not folder.is_dir():
+        return []
+    removed = []
+    for path in sorted(folder.iterdir()):
+        if path.name in keep:
+            continue
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+        removed.append(path.name)
+    return removed
 
 
 def configure_channel(root, manifest):
@@ -978,6 +1062,7 @@ def main():
         with locked(root):
             if args.action == 'install':
                 install(args.card, args.package, args.decoder_archive)
+                prune_releases(root)
             elif args.action == 'run':
                 run(root)
             elif args.action == 'rollback':

@@ -600,6 +600,12 @@ def activate(card, launch=start_and_check):
             raise
         (root / 'updates/ready.json').unlink(missing_ok=True)
         (root / 'updates/activation.json').unlink(missing_ok=True)
+        try:
+            # The new release started, so nothing can restore an older one:
+            # keep it and the previous release for Rollback, remove the rest.
+            manager.prune_releases(root)
+        except (OSError, ValueError) as exc:
+            record(root, 'Could not remove old releases', exc)
         status(root, 'complete', release, 'Update installed')
 
 

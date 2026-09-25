@@ -589,6 +589,64 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(startup.read_text(), '#!/bin/bash\necho other-app\nexit 0\n')
         self.assertFalse((self.card/'MisterZine Plex Core.mgl').exists())
 
+    def test_update_keeps_only_current_and_previous_release(self):
+        for ident in ('one', 'two', 'three'):
+            _, _, package = self.release(ident)
+            manager.install(self.card, package)
+        self.assertEqual(sorted(p.name for p in (self.root / 'releases').iterdir()), ['one', 'three', 'two'])
+        release, archive, _ = self.release('four', 'beta')
+        service.prepare(self.card, release, self.deliver(archive))
+        service.activate(self.card, lambda root: True)
+        self.assertEqual(sorted(p.name for p in (self.root / 'releases').iterdir()), ['four', 'three'])
+        manager.rollback(self.root)
+        self.assertEqual(manager.read_state(self.root)['current'], 'three')
+
+    def test_failed_update_removes_no_release(self):
+        for ident in ('one', 'two'):
+            _, _, package = self.release(ident)
+            manager.install(self.card, package)
+        release, archive, _ = self.release('three', 'beta')
+        service.prepare(self.card, release, self.deliver(archive))
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            service.activate(self.card, lambda root: False)
+        self.assertEqual(manager.read_state(self.root), {'current': 'two', 'previous': 'one'})
+        self.assertEqual(sorted(p.name for p in (self.root / 'releases').iterdir()), ['one', 'three', 'two'])
+
+    def test_zaparoo_lists_plex_under_other_and_follows_the_selection(self):
+        reloads = []
+        def fresh(ident):
+            _, _, package = self.release(ident)
+            (package / 'menu_launcher.py').write_text("SELECTIONS = ('MisterZine Plex Core',)\n")
+            return package
+        entry = self.card / 'zaparoo/launchers' / manager.ZAPAROO_ENTRY
+        with patch.object(manager, 'reload_zaparoo', lambda card: reloads.append(card)):
+            manager.install(self.card, fresh('one'))
+            self.assertFalse(entry.exists())               # no Zaparoo, no entry
+            (self.card / 'zaparoo').mkdir()
+            manager.install(self.card, fresh('two'))
+            self.assertIn('load_path = "misterzine-plex/releases/two/MisterZine Plex Core"', entry.read_text())
+            self.assertIn('category = "Other"', entry.read_text())
+            count = len(reloads)
+            manager.repair_menu_entry(self.card)            # unchanged: no rewrite, no reload
+            self.assertEqual(len(reloads), count)
+            manager.rollback(self.root)
+            self.assertIn('releases/one/MisterZine Plex Core"', entry.read_text())
+            self.assertEqual(len(reloads), count + 1)
+            with contextlib.redirect_stdout(io.StringIO()):
+                service.uninstall(self.card)
+            self.assertFalse(entry.exists())
+            self.assertEqual(len(reloads), count + 2)
+            self.assertTrue((self.card / 'zaparoo').is_dir())   # Zaparoo's own folders stay
+
+    def test_zaparoo_reload_runs_the_service_script(self):
+        script = self.card / 'Scripts/zaparoo.sh'
+        script.parent.mkdir()
+        marker = self.card / 'reloaded'
+        script.write_text('#!/bin/sh\necho "$1" > ' + str(marker) + '\n')
+        script.chmod(0o755)
+        manager.reload_zaparoo(self.card)
+        self.assertEqual(marker.read_text().strip(), '-reload')
+
     def test_unattended_pinned_install_does_not_fetch_latest_or_prompt(self):
         release, _, _ = self.release()
         request = self.fixture/'request.json'
