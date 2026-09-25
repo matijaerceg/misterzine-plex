@@ -725,15 +725,20 @@ class PausedHolders:
     """Stop other framebuffer users for the app's lifetime and let them go
     after. A Zaparoo Frontend left running beside the core kept painting its
     screen over the ring, which showed as a picture flashing to black."""
-    def __init__(self, holders):
+    def __init__(self, holders=()):
         self.paused = []
+        self.pause(holders)
+
+    def pause(self, holders):
         for pid, name in holders:
+            # Listed before the signal, so an interrupt here cannot leave a
+            # stopped process that nothing resumes.
+            self.paused.append((pid, name))
             try:
                 os.kill(pid, signal.SIGSTOP)
-                self.paused.append((pid, name))
                 trace('paused %s (pid %d): it holds /dev/fb0 and would draw over the picture' % (name, pid))
             except OSError:
-                pass
+                self.paused.pop()
 
     def resume(self):
         for pid, name in self.paused:
@@ -748,6 +753,15 @@ class PausedHolders:
 KDSETMODE, KDGETMODE, KD_TEXT, KD_GRAPHICS = 0x4B3A, 0x4B3B, 0, 1
 
 
+def active_console(sysfs=Path('/sys/class/tty/tty0/active')):
+    """The foreground virtual console as a stable path such as /dev/tty2."""
+    try:
+        name = sysfs.read_text().strip()
+    except OSError:
+        return '/dev/tty0'
+    return '/dev/' + name if re.fullmatch(r'tty[0-9]+', name) else '/dev/tty0'
+
+
 class GraphicsConsole:
     """Keep the Linux console out of the framebuffer while the app runs.
 
@@ -756,59 +770,79 @@ class GraphicsConsole:
     in text mode with the cursor shown; the kernel then blinks that cursor over
     the ring's header at the top-left, several times a second, and every blink
     blanks the picture. Graphics mode, which MiSTer main normally keeps, stops
-    the console drawing. The mode found at launch is put back afterwards."""
-    def __init__(self, tty='/dev/tty0', ioctl=None):
+    the console drawing. This is the only place that changes a console's mode:
+    it checks at launch and while the app runs, remembers each console it
+    changed by its own device path, and puts each one back afterwards."""
+    def __init__(self, console=active_console, ioctl=None):
         import fcntl
         self.ioctl = ioctl or fcntl.ioctl
-        self.tty, self.restore = tty, None
+        self.console = console
+        self.changed = {}      # console device -> mode to put back
+        self.told = 0
+        self.check(first=True)
+
+    def check(self, first=False):
+        path = self.console()
+        name = os.path.basename(path)
         try:
-            fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
+            fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
         except OSError as exc:
-            trace('console mode unknown (%s)' % exc.__class__.__name__)
+            if first:
+                trace('console %s mode unknown (%s)' % (name, exc.__class__.__name__))
             return
         try:
             mode = bytearray(4)
             self.ioctl(fd, KDGETMODE, mode)
             if mode[0] == KD_TEXT:
                 self.ioctl(fd, KDSETMODE, KD_GRAPHICS)
-                self.restore = KD_TEXT
-                trace('console was in text mode and would draw over the picture; graphics mode while Plex runs')
-            else:
-                trace('console in graphics mode')
+                self.changed.setdefault(path, KD_TEXT)
+                if self.told < 5:
+                    self.told += 1
+                    trace('console %s was in text mode and would draw over the picture; graphics mode while Plex runs' % name)
+            elif first:
+                trace('console %s in graphics mode' % name)
         except OSError as exc:
-            trace('console mode unknown (%s)' % exc.__class__.__name__)
+            if first:
+                trace('console %s mode unknown (%s)' % (name, exc.__class__.__name__))
         finally:
             os.close(fd)
 
     def release(self):
-        if self.restore is None:
-            return
-        try:
-            fd = os.open(self.tty, os.O_RDWR | os.O_NOCTTY)
+        for path, mode in self.changed.items():
             try:
-                self.ioctl(fd, KDSETMODE, self.restore)
-            finally:
-                os.close(fd)
-            trace('console returned to text mode')
-        except OSError:
-            pass
-        self.restore = None
+                fd = os.open(path, os.O_RDWR | os.O_NOCTTY)
+                try:
+                    self.ioctl(fd, KDSETMODE, mode)
+                finally:
+                    os.close(fd)
+                trace('console %s returned to text mode' % os.path.basename(path))
+            except OSError:
+                pass
+        self.changed = {}
 
 
 @contextlib.contextmanager
 def screen_to_ourselves(holders=fb_holders, console=GraphicsConsole):
     """Pause other framebuffer users and keep the console out of the
     framebuffer for the block, and undo both however the block ends, even
-    when the app never started."""
-    paused = PausedHolders(holders())
+    when the app never started. A SIGTERM during the undo is held off so the
+    undo always completes."""
+    previous = signal.getsignal(signal.SIGTERM)
+    paused, guard = PausedHolders(), None
     try:
+        paused.pause(holders())
         guard = console()
-        try:
-            yield
-        finally:
-            guard.release()
+        yield guard
     finally:
-        paused.resume()
+        with contextlib.suppress(ValueError):   # only the main thread may
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            if guard is not None:
+                guard.release()
+        finally:
+            paused.resume()
+            with contextlib.suppress(ValueError, TypeError):
+                signal.signal(signal.SIGTERM, previous)
 
 
 def fb_mode(parameters=Path('/sys/module/MiSTer_fb/parameters')):
@@ -871,15 +905,21 @@ def run(root):
             trace('framebuffer mode written, now %s' % fb_mode())
         changed = time.monotonic()
         rotate_log('/tmp/misterzine-plex.log')
-        with screen_to_ourselves(), open('/tmp/misterzine-plex.log', 'wb') as log:
-            child = subprocess.Popen(args, stdout=log, stderr=log)
-            trace('app started, pid %d' % child.pid)
-            def interrupted(signum, frame):
-                raise KeyboardInterrupt()
-            signal.signal(signal.SIGTERM, interrupted)
+        def interrupted(signum, frame):
+            raise KeyboardInterrupt()
+        # Before anything is paused or switched, so a stop at any point unwinds.
+        signal.signal(signal.SIGTERM, interrupted)
+        with screen_to_ourselves() as screen, open('/tmp/misterzine-plex.log', 'wb') as log:
+            child = None
             try:
+                child = subprocess.Popen(args, stdout=log, stderr=log)
+                trace('app started, pid %d' % child.pid)
+                ticks = 0
                 while child.poll() is None:
                     time.sleep(0.5)
+                    ticks += 1
+                    if ticks % 2 == 0:
+                        screen.check()
                     field = struct.unpack_from('<I', mem, 0x40)[0]
                     status = struct.unpack_from('<I', mem, 0x6c)[0]
                     if status & 0xfffffff0 != 0x56500000:
@@ -895,7 +935,10 @@ def run(root):
                 if child.poll() not in (None, 0):
                     raise RuntimeError('App could not start. Run MisterZine-Plex-Diagnostics and check the report.')
             finally:
-                stop_child(child)
+                with contextlib.suppress(ValueError):
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)   # finish stopping the app
+                if child is not None:
+                    stop_child(child)
                 cleanup_player(folder)
 
 

@@ -167,16 +167,16 @@ func mappers(proc string, phys, size uint64, self int) []string {
 	return out
 }
 
-// consoleMode reports whether the Linux console is in text mode, where the
-// kernel draws it (and its cursor) into the framebuffer the ring lives in.
-// With fix, a console found in text mode is put into graphics mode.
-func consoleMode(fix bool) string {
-	const kdsetmode, kdgetmode, kdGraphics = 0x4B3A, 0x4B3B, 1
-	vt := "?"
+// consoleMode reports whether the foreground Linux console is in text mode,
+// where the kernel draws it (and its cursor) into the framebuffer the ring
+// lives in. The launcher is what switches it; this only looks.
+func consoleMode() string {
+	const kdgetmode, kdGraphics = 0x4B3B, 1
+	vt := "tty0"
 	if b, err := os.ReadFile("/sys/class/tty/tty0/active"); err == nil {
 		vt = strings.TrimSpace(string(b))
 	}
-	f, err := os.OpenFile("/dev/tty0", os.O_RDWR|syscall.O_NOCTTY, 0)
+	f, err := os.OpenFile("/dev/"+vt, os.O_RDONLY|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return "console " + vt + " mode unknown"
 	}
@@ -188,13 +188,7 @@ func consoleMode(fix bool) string {
 	if mode == kdGraphics {
 		return "console " + vt + " in graphics mode"
 	}
-	if !fix {
-		return "console " + vt + " in text mode: its cursor draws over the picture"
-	}
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), kdsetmode, kdGraphics); e != 0 {
-		return "console was in text mode; could not switch it to graphics"
-	}
-	return "console was in text mode; switched to graphics so it stops drawing over the picture"
+	return "console " + vt + " in text mode: its cursor draws over the picture"
 }
 
 func listOrNone(names []string) string {

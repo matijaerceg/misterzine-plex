@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import time
@@ -428,26 +429,41 @@ class UpdateTests(unittest.TestCase):
         self.assertNotIn('example.org', report)
 
     def test_console_leaves_the_framebuffer_while_the_app_runs(self):
-        tty = self.card / 'tty'
-        tty.write_text('')
-        calls = []
+        first, second = self.card / 'tty2', self.card / 'tty7'
+        first.write_text(''); second.write_text('')
+        modes = {str(first): manager.KD_TEXT, str(second): manager.KD_GRAPHICS}
+        opened, calls = {}, []
+        real_open = os.open
+        def fake_open(path, flags, *a):
+            fd = real_open(path, flags, *a)
+            opened[fd] = str(path)
+            return fd
         def ioctl(fd, request, arg):
-            calls.append((request, arg if isinstance(arg, int) else None))
+            path = opened[fd]
             if request == manager.KDGETMODE:
-                arg[0] = mode
-        mode = manager.KD_TEXT
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            console = manager.GraphicsConsole(str(tty), ioctl)
+                arg[0] = modes[path]
+            else:
+                calls.append((os.path.basename(path), arg))
+                modes[path] = arg
+        active = [str(first)]
+        with patch.object(manager.os, 'open', fake_open), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            console = manager.GraphicsConsole(lambda: active[0], ioctl)
+            # Mid-run the foreground moves to another console, which is then put in text mode.
+            active[0] = str(second)
+            modes[str(second)] = manager.KD_TEXT
+            console.check()
+            console.check()
             console.release()
             console.release()
-        self.assertEqual(calls, [(manager.KDGETMODE, None), (manager.KDSETMODE, manager.KD_GRAPHICS),
-                                 (manager.KDSETMODE, manager.KD_TEXT)])
-        self.assertIn('text mode', out.getvalue())
+        self.assertEqual(calls, [('tty2', manager.KD_GRAPHICS), ('tty7', manager.KD_GRAPHICS),
+                                 ('tty2', manager.KD_TEXT), ('tty7', manager.KD_TEXT)])
+        self.assertIn('tty2 was in text mode', out.getvalue())
         calls.clear()
-        mode = manager.KD_GRAPHICS
-        with contextlib.redirect_stdout(io.StringIO()):
-            manager.GraphicsConsole(str(tty), ioctl).release()
-        self.assertEqual(calls, [(manager.KDGETMODE, None)])
+        modes[str(second)] = manager.KD_GRAPHICS   # a console already in graphics mode is left alone
+        with patch.object(manager.os, 'open', fake_open), contextlib.redirect_stdout(io.StringIO()):
+            manager.GraphicsConsole(lambda: str(second), ioctl).release()
+        self.assertEqual(calls, [])
 
     def test_a_failed_launch_still_resumes_holders_and_the_console(self):
         sleeper = subprocess.Popen(['sleep', '30'])
@@ -463,6 +479,15 @@ class UpdateTests(unittest.TestCase):
                     self.assertEqual(state(), 'T')
                     raise OSError('could not start the app')
         self.assertEqual(released, [True])
+        self.assertNotEqual(state(), 'T')
+        self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+        # A console that cannot even be set up still leaves nothing paused.
+        def broken():
+            raise KeyboardInterrupt()
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                with manager.screen_to_ourselves(lambda: [(sleeper.pid, 'sleep')], broken):
+                    pass
         self.assertNotEqual(state(), 'T')
 
     def test_framebuffer_holders_exclude_main_and_ourselves(self):
