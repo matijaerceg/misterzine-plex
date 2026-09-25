@@ -55,13 +55,16 @@ def legacy_watcher(root):
 
 def repair_menu_entry(card):
     """Point the main-menu entry at the selected release, in the form the
-    installed watcher understands. Called after any change of selection."""
+    installed watcher understands. Called after any change of selection.
+    With no release selected (a failed first install), both the menu entry
+    and the Zaparoo entry go."""
     root = card / 'misterzine-plex'
     entry = card / 'MisterZine Plex Core.mgl'
-    if not entry.exists() or not (root / 'menu_launcher.py').is_file():
-        return
     if not (root / 'active.json').is_file():
-        entry.unlink()
+        entry.unlink(missing_ok=True)
+        zaparoo_entry(card, enable=False)
+        return
+    if not entry.exists() or not (root / 'menu_launcher.py').is_file():
         return
     menu_entries(card)
 
@@ -335,6 +338,10 @@ def prune_releases(root):
     Every update added a folder of about 14 MB and none was ever removed. The
     previous release stays for Rollback. Call only once a new release is known
     to start, never while a failed update may still restore an older one."""
+    if (root / 'updates/activation.json').exists():
+        # An interrupted update is still to be recovered, and recovery may
+        # select a release that is neither current nor previous now.
+        return []
     state = read_state(root)
     keep = {state.get('current'), state.get('previous')} - {None}
     folder = root / 'releases'

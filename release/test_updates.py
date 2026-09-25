@@ -67,7 +67,7 @@ class UpdateTests(unittest.TestCase):
         p = patch.object(service, 'other_downloader', return_value=False)
         p.start(); self.addCleanup(p.stop)
 
-    def release(self, ident='fixture-1', channel='public'):
+    def release(self, ident='fixture-1', channel='public', helpers=None):
         version = '1.0.0' if channel == 'public' else '1.1.0-beta.1'
         access = None if channel == 'public' else {'batch': 'fixture', 'sha256': hashlib.sha256(b'012345').hexdigest()}
         files = {}
@@ -80,7 +80,7 @@ class UpdateTests(unittest.TestCase):
         manifest = {'id': ident, 'version': version, 'channel': channel, 'access': access, 'files': files}
         (package / 'manifest.json').write_text(json.dumps(manifest))
         for name in service.HELPERS:
-            (package / name).write_text('# synthetic helper ' + ident)
+            (package / name).write_text((helpers or {}).get(name, '# synthetic helper ' + ident))
         archive = self.fixture / (ident + '.zip')
         with zipfile.ZipFile(archive, 'w') as z:
             for path in package.rglob('*'):
@@ -637,6 +637,33 @@ class UpdateTests(unittest.TestCase):
             self.assertFalse(entry.exists())
             self.assertEqual(len(reloads), count + 2)
             self.assertTrue((self.card / 'zaparoo').is_dir())   # Zaparoo's own folders stay
+
+    def test_pending_recovery_keeps_every_release(self):
+        for ident in ('one', 'two', 'three'):
+            _, _, package = self.release(ident)
+            manager.install(self.card, package)
+        manager.write_json(self.root / 'updates/activation.json', {'helpers': []})
+        self.assertEqual(manager.prune_releases(self.root), [])
+        self.assertEqual(sorted(p.name for p in (self.root / 'releases').iterdir()), ['one', 'three', 'two'])
+        (self.root / 'updates/activation.json').unlink()
+        self.assertEqual(manager.prune_releases(self.root), ['one'])
+
+    def test_failed_first_install_leaves_no_zaparoo_entry(self):
+        (self.card / 'zaparoo').mkdir()
+        entry = self.card / 'zaparoo/launchers' / manager.ZAPAROO_ENTRY
+        release, archive, _ = self.release('first', 'beta', {'menu_launcher.py': "SELECTIONS = ()\n"})
+        service.prepare(self.card, release, self.deliver(archive))
+        seen = []
+        def launch(root):
+            seen.append(entry.exists())
+            return False
+        with patch.object(manager, 'reload_zaparoo', lambda card: None), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            service.activate(self.card, launch)
+        self.assertEqual(seen, [True])              # listed while the new release was tried
+        self.assertFalse((self.root / 'active.json').exists())
+        self.assertFalse(entry.exists())
+        self.assertFalse((self.card / 'MisterZine Plex Core.mgl').exists())
 
     def test_zaparoo_reload_runs_the_service_script(self):
         script = self.card / 'Scripts/zaparoo.sh'
