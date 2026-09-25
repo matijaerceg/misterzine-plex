@@ -78,25 +78,27 @@ static void old_fit(double aspect, int sh, int *dx, int *dy, int *dw, int *dh)
 	*dw = w; *dh = h; *dx = (W - w) / 2 & ~1; *dy = (H - h) / 2 & ~1;
 }
 
-/* Without calibration every frame Plex can send (even sizes up to 720x480,
-   square pixels) lands where it did before. The one known difference: a
-   frame a hair wider than 4:3 with far fewer than 480 lines (484x360) now
-   fills the screen like 4:3 instead of leaving 2-4 lines of border. */
+/* Without calibration every frame the presenter accepts (even sizes up to
+   1920x1088, square pixels, plus the common anamorphic aspects) lands
+   exactly where it did before calibration existed. */
 static void default_unchanged(void)
 {
 	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
-	int same = 0, known = 0, other = 0;
-	for (int sh = 16; sh <= H; sh += 2)
-		for (int sw = 16; sw <= W; sw += 2) {
-			double a = (double)sw / sh;
-			int ox, oy, ow, oh, x, y, w, h;
-			old_fit(a, sh, &ox, &oy, &ow, &oh);
-			fit(&g_screen, a, sh, &x, &y, &w, &h);
-			if (ox == x && oy == y && ow == w && oh == h) { same++; continue; }
-			if (a > 4.0 / 3.0 && a * 3 / 4 <= 61.0 / 60 && w == W && h == H) { known++; continue; }
-			if (other++ < 5) printf("  %dx%d: was %dx%d at %d,%d, now %dx%d at %d,%d\n", sw, sh, ow, oh, ox, oy, w, h, x, y);
-		}
-	CHECK(!other, "default placement changed for %d frame sizes (%d unchanged, %d known)", other, same, known);
+	static const double aspects[] = { 0, 4.0 / 3.0, 16.0 / 9.0, 1.85, 2.39 };   /* 0: square pixels */
+	int same = 0, other = 0;
+	for (int sh = 16; sh <= MAX_SRC_H; sh += 2)
+		for (int sw = 16; sw <= MAX_SRC_W; sw += 2)
+			for (unsigned i = 0; i < sizeof aspects / sizeof *aspects; i++) {
+				if (i && sw != 720) continue;       /* anamorphic: DVD width, any height */
+				double a = i ? aspects[i] : (double)sw / sh;
+				int ox, oy, ow, oh, x, y, w, h;
+				old_fit(a, sh, &ox, &oy, &ow, &oh);
+				fit(&g_screen, a, sh, &x, &y, &w, &h);
+				if (ox == x && oy == y && ow == w && oh == h) { same++; continue; }
+				if (other++ < 5) printf("  %dx%d aspect %.4f: was %dx%d at %d,%d, now %dx%d at %d,%d\n",
+				                        sw, sh, a, ow, oh, ox, oy, w, h, x, y);
+			}
+	CHECK(!other && same > 500000, "default placement changed for %d frame shapes (%d unchanged)", other, same);
 }
 
 static void screen_settings(void)

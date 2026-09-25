@@ -25,23 +25,24 @@
 0 0 0 0 1000        480/360     360     0   0   720 480   # small 4:3
 0 0 0 0 1000        6/5         480     36  0   648 480   # narrower than 4:3: pillarbox
 0 0 0 0 1000        270/480     480     208 0   304 480   # portrait
-# a deliberate change: taller than the raster and a hair off 4:3 now fills
-# like any other 4:3 frame (before: 476 lines at y 2). Plex sends 480 at most.
-0 0 0 0 1000        1290/960    960     0   0   720 480
+0 0 0 0 1000        1290/960    960     0   2   720 476   # a hair wider than 4:3, far from 480 lines
+0 0 0 0 1000        484/360     360     0   2   720 476
+0 0 0 0 1000        1920/18     18      0   230 720 18    # the smallest height, lines 1:1
 
-# edges moved in for overscan
+# edges moved in for overscan: each frame keeps the shape it has on the whole
+# raster, as large as fits the area
 16 12 16 12 1000    4/3         480     18  12  684 456   # 4:3 fills the height
 16 12 16 12 1000    720/404     404     16  68  688 344   # 16:9 fills the width
 20 10 8 14 1000     4/3         480     24  10  684 456   # off-centre set
 16 10 16 10 1000    4/3         480     16  10  688 460   # two lines short of the area: fill it
 0 4 0 4 1000        4/3         480     6   4   708 472   # 480 lines don't fit: scaled, not cut
-0 2 0 6 1000        636/476     476     6   2   708 472   # nor do 476
-0 2 0 2 1000        636/476     476     2   2   714 476   # into exactly 476 they go 1:1
+0 2 0 6 1000        636/476     476     2   2   714 472   # a 720:476 picture, scaled into 472 lines
+0 2 0 2 1000        636/476     476     0   2   720 476   # into exactly 476 it goes 1:1
 120 80 120 80 1150  720/306     306     120 160 480 158   # the limits
 
 # width corrected for a set that draws too wide or too narrow
 0 0 0 0 980         4/3         480     6   0   706 480   # too wide: narrower picture
-0 0 0 0 980         636/476     476     6   2   706 476   # ...keeping its own 476 lines
+0 0 0 0 980         636/476     476     4   0   712 480   # the 720:476 shape, narrowed
 0 0 0 0 1020        4/3         480     0   4   720 470   # too narrow: can't widen, so shorter
 0 0 0 0 1010        644/480     480     0   2   720 476   # not snapped back to 480 lines
 0 0 0 0 1020        720/404     404     0   64  720 352

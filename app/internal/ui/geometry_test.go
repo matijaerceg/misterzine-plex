@@ -153,7 +153,7 @@ func TestCalibrateSquareStaysOnScreen(t *testing.T) {
 			press(s, input.Up, input.Right)
 		}
 		x, top, bottom := s.square(s.g)
-		if top < 26 || x < 0 || x+s.sqW+cornerArrowW > 720 || bottom > 480 {
+		if top-cornerArrowH < 0 || x < 0 || x+s.sqW+cornerArrowW > 720 || bottom > 480 {
 			t.Errorf("%+v: %dx%d square at x %d, lines %d..%d", g, s.sqW, s.sqH, x, top, bottom)
 		}
 	}
@@ -174,6 +174,18 @@ func TestCalibrateOnlyTheDpadChangesTheWidth(t *testing.T) {
 	press(s, input.Right, input.Left, input.Up, input.Down)
 	if s.g.Width != 1000 {
 		t.Fatalf("back at the opening square, width %d", s.g.Width)
+	}
+	// at the narrowest width the rounded opening square is a hair past the
+	// limit; coming back to it still restores the saved width
+	a.Cfg.Geometry = Geometry{Top: 80, Bottom: 80, Width: GeometryWidthMin}
+	s = NewCalibrate(a)
+	s.sel = calCorner
+	if squareWidth(s.sqW, s.sqH) >= GeometryWidthMin {
+		t.Fatal("pick a geometry whose opening square rounds below the limit")
+	}
+	press(s, input.Right, input.Left)
+	if s.g.Width != GeometryWidthMin || s.sqW != s.sqW0 {
+		t.Fatalf("back at the opening square, width %d, square %d wide (opened %d)", s.g.Width, s.sqW, s.sqW0)
 	}
 }
 

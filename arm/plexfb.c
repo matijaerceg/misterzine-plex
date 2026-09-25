@@ -327,35 +327,36 @@ static int parse_screen(const char *s, struct screen *out)
 	return 1;
 }
 
-/* where a frame of display aspect `aspect` and `sh` lines goes: the largest
-   rectangle of that shape inside the picture area, centred. The raster is
-   4:3, so a pixel is 8/9 of a line wide, times the width correction. Keep in
-   step with Geometry.Fit in app/internal/ui/geometry.go
+/* where a frame of display aspect `aspect` and `sh` lines goes. Without
+   calibration, exactly where it went before calibration existed; with it,
+   the same shape, as large as fits the picture area at the calibrated width,
+   centred. Keep in step with Geometry.Fit in app/internal/ui/geometry.go
    (tools/testdata/fit_cases.txt). */
 static void fit(const struct screen *s, double aspect, int sh, int *dx, int *dy, int *dw, int *dh)
 {
-	int aw = W - s->l - s->r, ah = H - s->t - s->b;
-	/* a 4:3 frame's width at the area's height, and its height at the area's
-	   width (720 and 480 uncalibrated, exactly, so the sums below round as
-	   they did before calibration existed) */
-	double fw = ah * 1.5 * s->width / 1000, fh = aw / 1.5 * 1000 / s->width;
-	/* a hair off 4:3 is 4:3: frames like 644x480 and 636x480 fill the screen,
-	   lines 1:1, with no slivers of border. Narrower down to 707/720 of it
-	   (what rounded to within 12 pixels of full width), wider up to 1/60. */
-	double r = aspect * 3 / 4;
-	int four3 = r >= 707.0 / 720 && r <= 61.0 / 60;
-	if (four3) aspect = 4.0 / 3.0;
-	int w = aw, h = ah;
-	if (aspect > 4.0 / 3.0 * aw / fw) h = 2 * (int)lround(fh * (4.0 / 3.0) / aspect / 2);
-	else                              w = 2 * (int)lround(fw * aspect / (4.0 / 3.0) / 2);
-	if (aw - w <= 2) w = aw;             /* a rounding step short: fill */
-	if (ah - h <= 2) h = ah;
-	/* within 2% of the frame's own line count, keep its lines 1:1: a resample
-	   that small would only soften the picture (648x360). Not for a 4:3 frame
-	   shortened by a width correction, which this would undo. */
-	if ((!four3 || h == ah) && !(sh & 1) && sh <= ah && abs(h - sh) <= H / 50) h = sh;
+	/* on the whole 4:3 raster, as before calibration existed */
+	int w = W, h = H;
+	if (aspect > 4.0 / 3.0) h = 2 * (int)lround(H * (4.0 / 3.0) / aspect / 2);
+	else                    w = 2 * (int)lround(W * aspect / (4.0 / 3.0) / 2);
 	if (w < 16) w = 16;
 	if (h < 16) h = 16;
+	if (w >= W - W / 60) w = W;          /* near 4:3: no slivers of border */
+	/* within 2% of the frame's own line count, keep its lines 1:1: a resample
+	   that small would only soften the picture (644x480 fills the screen) */
+	if (!(sh & 1) && sh <= H && abs(h - sh) <= H / 50) h = sh;
+	/* calibrated: that shape, its width scaled by the correction, as large
+	   as fits the picture area */
+	int aw = W - s->l - s->r, ah = H - s->t - s->b;
+	if (aw != W || ah != H || s->width != 1000) {
+		double k = s->width / 1000.0;
+		int nw = aw, nh = ah;
+		if ((double)w * ah * k > (double)aw * h) nh = 2 * (int)lround((double)aw * h / (w * k) / 2);
+		else                                     nw = 2 * (int)lround((double)w * ah * k / h / 2);
+		w = aw - nw <= 2 ? aw : nw;      /* a rounding step short: fill */
+		h = ah - nh <= 2 ? ah : nh;
+		if (w < 16) w = 16;
+		if (h < 16) h = 16;
+	}
 	*dw = w; *dh = h; *dx = s->l + ((aw - w) / 2 & ~1); *dy = s->t + ((ah - h) / 2 & ~1);
 }
 

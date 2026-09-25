@@ -51,40 +51,49 @@ func (g Geometry) Env() string {
 }
 
 // Fit is where the presenter puts a frame of display aspect `aspect` and
-// `lines` lines: the largest rectangle of that shape inside the picture area,
-// centred. It must match fit() in arm/plexfb.c; both are tested against
-// tools/testdata/fit_cases.txt.
+// `lines` lines. Without calibration, exactly where it went before
+// calibration existed; with it, the same shape, as large as fits the picture
+// area at the calibrated width, centred. It must match fit() in
+// arm/plexfb.c operation for operation (both are tested against
+// tools/testdata/fit_cases.txt), so the float sums use variables: Go folds
+// constant arithmetic exactly, C rounds each step.
 func (g Geometry) Fit(aspect float64, lines int) (x, y, w, h int) {
 	g = g.Normal()
-	aw, ah := 720-g.Left-g.Right, 480-g.Top-g.Bottom
-	// a 4:3 frame's width at the area's height and its height at the area's
-	// width, in the same order of operations as the presenter
-	fw := float64(ah) * 1.5 * float64(g.Width) / 1000
-	fh := float64(aw) / 1.5 * 1000 / float64(g.Width)
-	// a hair off 4:3 is 4:3: 707/720 of it to 1/60 over
-	r := aspect * 3 / 4
-	four3 := r >= 707.0/720 && r <= 61.0/60
-	if four3 {
-		aspect = 4.0 / 3
-	}
-	w, h = aw, ah
-	if aspect > 4.0/3*float64(aw)/fw {
-		h = 2 * int(math.Round(fh*(4.0/3)/aspect/2))
+	fourThree, rw, rh := 4.0/3, 720.0, 480.0
+	// on the whole 4:3 raster, as before calibration existed
+	w, h = 720, 480
+	if aspect > fourThree {
+		h = 2 * int(math.Round(rh*fourThree/aspect/2))
 	} else {
-		w = 2 * int(math.Round(fw*aspect/(4.0/3)/2))
-	}
-	if aw-w <= 2 {
-		w = aw
-	}
-	if ah-h <= 2 {
-		h = ah
-	}
-	// within 2% of the frame's own line count its lines stay 1:1, except a
-	// 4:3 frame shortened by a width correction
-	if (!four3 || h == ah) && lines&1 == 0 && lines <= ah && abs(h-lines) <= 480/50 {
-		h = lines
+		w = 2 * int(math.Round(rw*aspect/fourThree/2))
 	}
 	w, h = max(w, 16), max(h, 16)
+	if w >= 720-720/60 {
+		w = 720 // near 4:3: no slivers of border
+	}
+	if lines&1 == 0 && lines <= 480 && abs(h-lines) <= 480/50 {
+		h = lines // within 2% of its own line count: lines 1:1
+	}
+	// calibrated: that shape, its width scaled by the correction, as large
+	// as fits the picture area
+	aw, ah := 720-g.Left-g.Right, 480-g.Top-g.Bottom
+	if aw != 720 || ah != 480 || g.Width != 1000 {
+		k := float64(g.Width) / 1000
+		nw, nh := aw, ah
+		if float64(w)*float64(ah)*k > float64(aw)*float64(h) {
+			nh = 2 * int(math.Round(float64(aw)*float64(h)/(float64(w)*k)/2))
+		} else {
+			nw = 2 * int(math.Round(float64(w)*float64(ah)*k/float64(h)/2))
+		}
+		w, h = nw, nh
+		if aw-nw <= 2 {
+			w = aw // a rounding step short: fill
+		}
+		if ah-nh <= 2 {
+			h = ah
+		}
+		w, h = max(w, 16), max(h, 16)
+	}
 	return g.Left + ((aw-w)/2)&^1, g.Top + ((ah-h)/2)&^1, w, h
 }
 
@@ -186,11 +195,13 @@ func (s *Calibrate) Key(ev input.Event, now time.Time) {
 		if w < s.sqW0-72 || w > s.sqW0+72 || h < s.sqH0-64 || h > s.sqH0+64 {
 			return
 		}
-		if width := squareWidth(w, h); width >= GeometryWidthMin && width <= GeometryWidthMax {
+		switch width := squareWidth(w, h); {
+		case w == s.sqW0 && h == s.sqH0:
+			// back where it started: exactly what was saved, which the
+			// rounded square may put a hair outside the limits
+			s.sqW, s.sqH, g.Width = w, h, s.width0
+		case width >= GeometryWidthMin && width <= GeometryWidthMax:
 			s.sqW, s.sqH, g.Width = w, h, width
-		}
-		if s.sqW == s.sqW0 && s.sqH == s.sqH0 {
-			g.Width = s.width0 // back where it started: exactly what was saved
 		}
 	}
 	*g = g.Normal()
@@ -298,7 +309,7 @@ func (s *Calibrate) Draw(c *gfx.Canvas, now time.Time) bool {
 // its top or the corner's arrow off the screen.
 func (s *Calibrate) square(g Geometry) (x, top, bottom int) {
 	mx, my := g.Left+(720-g.Left-g.Right)/2, g.Top+(480-g.Top-g.Bottom)/2
-	bottom = max((my+s.sqH0/2)&^1, s.sqH+30)
+	bottom = max((my+s.sqH0/2)&^1, s.sqH+cornerArrowH+4)
 	x = min(mx-s.sqW0/2, 720-8-s.sqW-cornerArrowW)
 	return x, bottom - s.sqH, bottom
 }
@@ -308,8 +319,9 @@ func (s *Calibrate) centre(c *gfx.Canvas, cx, y int, f *gfx.Font, col gfx.Color,
 	s.app.textCenterOn(c, cx, y, f, col, calFill, f.Fit(text, inside(y, y+f.Height())-8))
 }
 
-// cornerArrowW is how far cornerArrow reaches right of the corner.
-const cornerArrowW = 56
+// cornerArrowW and cornerArrowH are how far cornerArrow reaches right of
+// the corner and above it.
+const cornerArrowW, cornerArrowH = 56, 48
 
 // cornerArrow points down and left at (x, y) from above and to the right:
 // a head of two strokes at the tip and a shaft running up at 45 degrees on
