@@ -103,7 +103,9 @@ def zaparoo_entry(card, enable=True, folder=None, reload=None):
     is ours alone, rewritten whenever the selected release changes and removed
     on uninstall. Nothing is written when Zaparoo is not installed. A pre-beta.4
     watcher cannot start the app from a direct core load, so none is listed
-    for one. A launcher with the same id in Zaparoo's own config.toml wins."""
+    for one. A launcher with the same id in Zaparoo's own config.toml wins.
+    The frontend's system list reads this after a reload; no media database
+    update is needed (that only indexes games)."""
     reload = reload or reload_zaparoo
     root = card / 'misterzine-plex'
     zaparoo = card / 'zaparoo'
