@@ -27,7 +27,16 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 	}
 	logf("watch: framebuffer mode %q, console %s", readMode(), consoleState())
 	mode := readMode()
-	var lostHeader, foreign, black int
+	phys, fromDriver := ringPhys()
+	source := "as the framebuffer driver reports it"
+	if !fromDriver {
+		source = "assumed; the driver did not say"
+	}
+	r.plantCanaries()
+	logf("watch: ring at physical 0x%x (%s); memory also mapped by: %s", phys, source,
+		listOrNone(mappers("/proc", phys, mapSize, os.Getpid())))
+	var lostHeader, foreign, black, gap, detailed int
+	var scanned bool
 	var lastSeq uint32
 	report := time.Now()
 	tick := time.NewTicker(50 * time.Millisecond)
@@ -38,16 +47,18 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 			return
 		case <-tick.C:
 		}
-		if atomic.LoadUint32(&r.hdr[0]) != magic && atomic.LoadUint32(&r.pubSeq) != 0 {
+		lost := atomic.LoadUint32(&r.hdr[0]) != magic && atomic.LoadUint32(&r.pubSeq) != 0
+		header := ""
+		if lost {
+			header = r.headerWords() // as found, before the redraw replaces it
 			lostHeader++
 			if wake != nil {
 				wake()
 			}
 		}
 		// Our own publish moves seq between two samples; a stranger's leaves
-		// it away from ours across two consecutive samples.
-		// Nothing to judge before the app's first publish: the header and
-		// the slots still hold whatever the previous process left.
+		// it away from ours across two consecutive samples. Nothing to judge
+		// before the app's first publish. Sampled before any slow logging.
 		seq := atomic.LoadUint32(&r.hdr[1])
 		if ours := atomic.LoadUint32(&r.pubSeq); ours != 0 {
 			if seq != ours && seq == lastSeq {
@@ -58,6 +69,24 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 			}
 		}
 		lastSeq = seq
+		hit, zeroed, first := r.canaryState()
+		if hit > 0 {
+			gap++
+			r.plantCanaries()
+		}
+		if (lost || hit > 0) && detailed < 3 {
+			detailed++
+			what := "the gap below the first slot changed"
+			if lost {
+				what = "header wiped, found " + header
+			}
+			logf("watch: %s; canaries %s", what, describeCanaries(hit, zeroed, first))
+			if !scanned {
+				scanned = true
+				logf("watch: at that moment the ring's memory was mapped by: %s",
+					listOrNone(mappers("/proc", phys, mapSize, os.Getpid())))
+			}
+		}
 		if n%10 == 0 {
 			if m := readMode(); m != mode {
 				logf("watch: framebuffer mode changed from %q to %q", mode, m)
@@ -65,11 +94,11 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 			}
 		}
 		if time.Since(report) >= 5*time.Second {
-			if lostHeader+foreign+black > 0 {
-				logf("watch: in 5 s the header was found wiped %d times, published by another writer %d times, and the published slot read black %d times",
-					lostHeader, foreign, black)
+			if lostHeader+foreign+black+gap > 0 {
+				logf("watch: in 5 s the header was found wiped %d times, published by another writer %d times, the published slot read black %d times, and the gap below the first slot was overwritten %d times",
+					lostHeader, foreign, black, gap)
 			}
-			lostHeader, foreign, black = 0, 0, 0
+			lostHeader, foreign, black, gap, detailed, scanned = 0, 0, 0, 0, 0, false
 			report = time.Now()
 		}
 	}

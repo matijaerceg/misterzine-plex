@@ -4,8 +4,8 @@
  *
  * plexfb - ARM-side writer for the PlexCRT core's DDR3 scan-out.
  *
- * Memory layout: see rtl/ddr_scanout.v. Everything lives at physical
- * 0x30000000, in the region the kernel leaves alone (mem=511M on MiSTer).
+ * Memory layout: see rtl/ddr_scanout.v. The ring lives in the Linux
+ * framebuffer (/dev/fb0), which MiSTer main also maps; PHYS_BASE is a fallback.
  *
  *   plexfb card             draw a static test card into buffer 0 and exit
  *   plexfb anim [seconds]   moving bars, alternating buffers, paced on the
