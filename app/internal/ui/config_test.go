@@ -128,7 +128,7 @@ func TestConnectionSaveFailureDoesNotSignIn(t *testing.T) {
 }
 
 func TestBitrateClampsOlderSavedHighValues(t *testing.T) {
-	for _, tc := range []struct{ saved, want int }{{0, 3000}, {1000, 1000}, {1500, 1500}, {2000, 2000}, {3000, 3000}, {4500, 3000}, {6000, 3000}, {20000, 3000}} {
+	for _, tc := range []struct{ saved, want int }{{0, 3000}, {500, 1000}, {1000, 1000}, {1500, 1500}, {2000, 2000}, {2500, 2000}, {3000, 3000}, {4500, 3000}, {6000, 3000}, {20000, 3000}} {
 		c := Config{Bitrate: tc.saved}
 		if c.BitrateKbps() != tc.want {
 			t.Fatalf("saved %d: got %d, want %d", tc.saved, c.BitrateKbps(), tc.want)

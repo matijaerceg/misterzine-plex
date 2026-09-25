@@ -553,6 +553,28 @@ static FILE *aplay;
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint32_t rd16(const uint8_t *p) { return p[0] | p[1] << 8; }
 
+/* a video stream's BITMAPINFOHEADER: the frame size, if it is planar yuv420p
+   of a size the presenter takes */
+static int parse_strf(const uint8_t *b, uint32_t sz, int *w, int *h)
+{
+	if (sz < 20) return 0;
+	int64_t bw = (int32_t)rd32(b + 4), bh = (int32_t)rd32(b + 8);
+	if (bh < 0) bh = -bh;                    /* top-down; 64 bits, so no overflow */
+	if (bw < 16 || bw > MAX_SRC_W || bh < 16 || bh > MAX_SRC_H || rd16(b + 14) != 12
+	    || (memcmp(b + 16, "I420", 4) && memcmp(b + 16, "IYUV", 4)))
+		return 0;
+	*w = (int)bw; *h = (int)bh;
+	return 1;
+}
+
+/* ffmpeg's video properties chunk: the frame's display aspect, 0 if absent */
+static double parse_vprp(const uint8_t *b, uint32_t sz)
+{
+	if (sz < 24) return 0;
+	uint32_t ar = rd32(b + 20);               /* FrameAspectRatio, x << 16 | y */
+	return (ar >> 16) && (ar & 0xffff) ? (double)(ar >> 16) / (ar & 0xffff) : 0;
+}
+
 static int read_full(void *dst, size_t n)
 {
 	size_t got = 0;
@@ -583,10 +605,10 @@ static void *avi_reader(void *arg)
 		fprintf(stderr, "plexfb: stdin is not an AVI stream\n");
 		ring_eof = 1; return NULL;
 	}
-	/* the video stream's header says the frame size (strf, a BITMAPINFOHEADER)
-	   and, when ffmpeg knows it, the display aspect (vprp); without a size the
-	   frames are taken to be 720x480 */
-	int vw = W, vh = H, vids = 0, ready = 0;
+	/* stream 00's header says the frame size (strf, a BITMAPINFOHEADER) and,
+	   when ffmpeg knows it, the display aspect (vprp). Without a size the
+	   frames are the old 720x480 4:3 raster. */
+	int vw = W, vh = H, sized = 0, streams = 0, vids = 0, ready = 0;
 	double vaspect = 0;
 	size_t vneed = 0;
 	unsigned bad = 0;
@@ -603,7 +625,7 @@ static void *avi_reader(void *arg)
 		if (!memcmp(ch, "strh", 4) && sz >= 32 && sz <= 256) {
 			uint8_t b[256];
 			if (!read_full(b, padded)) break;
-			vids = !memcmp(b, "vids", 4);
+			vids = streams++ == 0 && !memcmp(b, "vids", 4);   /* 00dc chunks are stream 00 */
 			if (vids) {
 				uint32_t scale = rd32(b + 20), rate = rd32(b + 24);
 				if (scale && rate) g_avi_fps = (double)rate / scale;
@@ -613,25 +635,22 @@ static void *avi_reader(void *arg)
 		if (vids && !ready && !memcmp(ch, "strf", 4) && sz >= 20 && sz <= 256) {
 			uint8_t b[256];
 			if (!read_full(b, padded)) break;
-			int32_t bw = (int32_t)rd32(b + 4), bh = (int32_t)rd32(b + 8);
-			if (bh < 0) bh = -bh;
-			if (bw >= 16 && bw <= MAX_SRC_W && bh >= 16 && bh <= MAX_SRC_H && rd16(b + 14) == 12
-			    && (!memcmp(b + 16, "I420", 4) || !memcmp(b + 16, "IYUV", 4))) {
-				vw = bw; vh = bh;
-			} else
+			if (parse_strf(b, sz, &vw, &vh)) sized = 1;
+			else
 				fprintf(stderr, "plexfb: video %dx%d, %u bits, %.4s: not yuv420p within %dx%d, taking 720x480\n",
-				        bw, bh, rd16(b + 14), (const char *)b + 16, MAX_SRC_W, MAX_SRC_H);
+				        (int)(int32_t)rd32(b + 4), (int)(int32_t)rd32(b + 8), rd16(b + 14), (const char *)b + 16,
+				        MAX_SRC_W, MAX_SRC_H);
 			continue;
 		}
 		if (vids && !ready && !memcmp(ch, "vprp", 4) && sz >= 24 && sz <= 256) {
 			uint8_t b[256];
 			if (!read_full(b, padded)) break;
-			uint32_t ar = rd32(b + 20);               /* FrameAspectRatio, x << 16 | y */
-			if ((ar >> 16) && (ar & 0xffff)) vaspect = (double)(ar >> 16) / (ar & 0xffff);
+			vaspect = parse_vprp(b, sz);
 			continue;
 		}
 		if (!memcmp(ch, "00dc", 4)) {
 			if (!ready) {
+				if (!sized && !vaspect) vaspect = 4.0 / 3.0;
 				geometry_setup(&g_geo, vw, vh, vaspect);
 				vneed = geometry_frame_bytes(&g_geo);
 				const struct plane_map *y = &g_geo.p[0];

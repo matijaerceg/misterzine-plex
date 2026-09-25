@@ -130,6 +130,60 @@ static void neon_matches_c(int w, int h, double aspect)
 	free(f); free(a); free(b);
 }
 
+static void wr32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+
+static int strf(int32_t w, int32_t h, int bits, const char *fourcc, uint32_t sz, int *ow, int *oh)
+{
+	uint8_t b[40] = { 0 };
+	wr32(b, 40); wr32(b + 4, (uint32_t)w); wr32(b + 8, (uint32_t)h);
+	b[12] = 1; b[14] = (uint8_t)bits; memcpy(b + 16, fourcc, 4);
+	*ow = *oh = -1;
+	return parse_strf(b, sz, ow, oh);
+}
+
+static void headers(void)
+{
+	int w, h;
+	CHECK(strf(644, 480, 12, "I420", 40, &w, &h) && w == 644 && h == 480, "I420 644x480 not taken: %dx%d", w, h);
+	CHECK(strf(640, -480, 12, "IYUV", 40, &w, &h) && w == 640 && h == 480, "top-down IYUV not taken: %dx%d", w, h);
+	CHECK(!strf(640, INT32_MIN, 12, "I420", 40, &w, &h), "height -2^31 taken");
+	CHECK(!strf(640, 480, 12, "YV12", 40, &w, &h), "YV12 (swapped planes) taken");
+	CHECK(!strf(640, 480, 24, "I420", 40, &w, &h), "24 bits taken");
+	CHECK(!strf(4096, 2160, 12, "I420", 40, &w, &h), "4096x2160 taken");
+	CHECK(!strf(8, 8, 12, "I420", 40, &w, &h), "8x8 taken");
+	CHECK(!strf(640, 480, 12, "I420", 16, &w, &h), "short strf taken");
+	uint8_t v[36] = { 0 };
+	wr32(v + 20, 16u << 16 | 9);
+	CHECK(fabs(parse_vprp(v, 36) - 16.0 / 9.0) < 1e-9, "vprp 16:9 read as %f", parse_vprp(v, 36));
+	CHECK(parse_vprp(v, 20) == 0, "short vprp read");
+	wr32(v + 20, 0);
+	CHECK(parse_vprp(v, 36) == 0, "vprp without an aspect read");
+}
+
+/* a crop rectangle (a zoom, later): only the rectangle's pixels reach the screen */
+static void crop(void)
+{
+	static struct plane_map m;
+	int w = 640, h = 360;
+	uint8_t *f = frame_new(w, h), *out = malloc(W * H);
+	for (int r = 0; r < h; r++)
+		for (int x = 0; x < w; x++) f[(size_t)r * w + x] = (uint8_t)(x * 255 / (w - 1));
+	/* the middle 480x360 of a 16:9 frame, filling the 4:3 screen */
+	plane_setup(&m, w, h, 80, 0, 480, 360, 0, 0, W, H, W, H, 16);
+	scale_plane(&m, f, out);
+	uint8_t lo = f[80], hi = f[80 + 479];
+	int outside = 0, back = 0;
+	for (int r = 0; r < H; r++)
+		for (int x = 0; x < W; x++) {
+			uint8_t v = out[r * W + x];
+			if (v < lo || v > hi) outside++;
+			if (x && v < out[r * W + x - 1]) back++;
+		}
+	CHECK(!outside && !back && out[0] == lo && out[W - 1] == hi, "crop: %d samples outside %u..%u, %d backwards, ends %u..%u",
+	      outside, lo, hi, back, out[0], out[W - 1]);
+	free(f); free(out);
+}
+
 static void timing(int w, int h, double aspect)
 {
 	static struct geometry g;
@@ -161,9 +215,11 @@ int main(int argc, char **argv)
 	fits(270, 480, 270.0 / 480, 208, 0, 304, 480);      /* portrait */
 	fits(640, 480, 0, 0, 0, 720, 480);                  /* no aspect in the header: square pixels */
 
+	headers();
+	crop();
 	passthrough();
 	int shapes[][2] = { {640, 480}, {644, 480}, {720, 404}, {720, 306}, {480, 360}, {576, 480}, {270, 480},
-	                    {642, 482}, {1280, 720}, {352, 240} };
+	                    {642, 482}, {641, 481}, {1280, 720}, {352, 240} };
 	for (unsigned i = 0; i < sizeof shapes / sizeof *shapes; i++) {
 		int w = shapes[i][0], h = shapes[i][1];
 		flat_and_borders(w, h, (double)w / h);

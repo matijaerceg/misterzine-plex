@@ -82,7 +82,6 @@ func LoadConfig(path string) *Config {
 // from 2.5 Mbps up gets the same stream. Lower caps get less, as labelled
 // (measured on Plex Media Server 1.43, the video rate without the sound).
 const DefaultBitrate = 3000
-const MaxBitrate = 3000
 
 // Bitrates are the caps offered, in kbit/s, with what each one delivers.
 var Bitrates = []struct {
@@ -90,20 +89,24 @@ var Bitrates = []struct {
 	Label string
 }{{1000, "0.4 Mbps, low res"}, {1500, "1 Mbps"}, {2000, "1.2 Mbps"}, {3000, "Max (2 Mbps)"}}
 
-// BitrateKbps is the cap in force. Older builds offered 4.5 and 6 Mbps; the
-// server sent those the same stream as 3 Mbps, so they read as the maximum.
+// BitrateKbps is the cap in force: the offered one at or below the saved
+// value, so the request is always the step Options shows. Older builds
+// offered 4.5 and 6 Mbps; the server sent those the same stream as 3 Mbps,
+// so they read as the maximum.
 func (c *Config) BitrateKbps() int {
-	if c.Bitrate <= 0 {
-		return DefaultBitrate
-	}
-	return min(c.Bitrate, MaxBitrate)
+	return Bitrates[c.bitrateIndex()].Kbps
 }
 
-// bitrateIndex is the offered cap at or below the one in force.
+// bitrateIndex is the offered cap at or below the saved one (the lowest for
+// anything smaller, the default when nothing is saved).
 func (c *Config) bitrateIndex() int {
+	saved := c.Bitrate
+	if saved <= 0 {
+		saved = DefaultBitrate
+	}
 	i := 0
 	for j, b := range Bitrates {
-		if b.Kbps <= c.BitrateKbps() {
+		if b.Kbps <= saved {
 			i = j
 		}
 	}
