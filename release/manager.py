@@ -795,6 +795,22 @@ class GraphicsConsole:
         self.restore = None
 
 
+@contextlib.contextmanager
+def screen_to_ourselves(holders=fb_holders, console=GraphicsConsole):
+    """Pause other framebuffer users and keep the console out of the
+    framebuffer for the block, and undo both however the block ends, even
+    when the app never started."""
+    paused = PausedHolders(holders())
+    try:
+        guard = console()
+        try:
+            yield
+        finally:
+            guard.release()
+    finally:
+        paused.resume()
+
+
 def fb_mode(parameters=Path('/sys/module/MiSTer_fb/parameters')):
     try:
         return (parameters / 'mode').read_text().strip()
@@ -855,9 +871,7 @@ def run(root):
             trace('framebuffer mode written, now %s' % fb_mode())
         changed = time.monotonic()
         rotate_log('/tmp/misterzine-plex.log')
-        holders = PausedHolders(fb_holders())
-        console = GraphicsConsole()
-        with open('/tmp/misterzine-plex.log', 'wb') as log:
+        with screen_to_ourselves(), open('/tmp/misterzine-plex.log', 'wb') as log:
             child = subprocess.Popen(args, stdout=log, stderr=log)
             trace('app started, pid %d' % child.pid)
             def interrupted(signum, frame):
@@ -883,8 +897,6 @@ def run(root):
             finally:
                 stop_child(child)
                 cleanup_player(folder)
-                holders.resume()
-                console.release()
 
 
 def main():

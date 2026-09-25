@@ -449,6 +449,22 @@ class UpdateTests(unittest.TestCase):
             manager.GraphicsConsole(str(tty), ioctl).release()
         self.assertEqual(calls, [(manager.KDGETMODE, None)])
 
+    def test_a_failed_launch_still_resumes_holders_and_the_console(self):
+        sleeper = subprocess.Popen(['sleep', '30'])
+        self.addCleanup(sleeper.kill)
+        released = []
+        class Console:
+            def release(self):
+                released.append(True)
+        state = lambda: (Path('/proc') / str(sleeper.pid) / 'stat').read_text().split(') ')[1][0]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(OSError):
+                with manager.screen_to_ourselves(lambda: [(sleeper.pid, 'sleep')], Console):
+                    self.assertEqual(state(), 'T')
+                    raise OSError('could not start the app')
+        self.assertEqual(released, [True])
+        self.assertNotEqual(state(), 'T')
+
     def test_framebuffer_holders_exclude_main_and_ourselves(self):
         proc = self.card / 'proc'
         for pid, name, target in ((40, 'frontend', '/dev/fb0'), (41, 'MiSTer_Zaparoo', '/dev/fb0'),
