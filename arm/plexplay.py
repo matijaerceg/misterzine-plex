@@ -123,9 +123,26 @@ def find(query, section=1):
             for v in root.findall('Video')]
 
 def item_info(rk):
-    """title, duration (s), saved resume point (s)"""
+    """title, duration (s), saved resume point (s), source frame rate (0 if unknown)"""
     v = ET.fromstring(get('/library/metadata/%s' % rk)).find('Video')
-    return (v.get('title'), int(v.get('duration', 0)) / 1000.0, int(v.get('viewOffset', 0)) / 1000.0)
+    s, m = v.find('.//Stream[@streamType="1"]'), v.find('Media')
+    try: fps = float(s.get('frameRate') or 0) if s is not None else 0.0
+    except ValueError: fps = 0.0
+    if not fps and m is not None:
+        fps = {'50p': 50.0, '60p': 59.94}.get(m.get('videoFrameRate') or '', 0.0)
+    return (v.get('title'), int(v.get('duration', 0)) / 1000.0, int(v.get('viewOffset', 0)) / 1000.0, fps)
+
+def profile_extra(src_fps):
+    """the limits added to the Plex Web client profile for this item"""
+    # the Plex Web profile allows six-channel AAC; cap audio at stereo so the
+    # server downmixes (and boosts) rather than ffmpeg on the ARM
+    extra = 'add-limitation(scope=videoAudioCodec&scopeName=*&type=upperBound&name=audio.channels&value=2)'
+    # 50 and 60 fps would arrive at their full rate, more frames than the
+    # board decodes: ask for exactly half, every other frame (25 or 29.97)
+    if src_fps >= 45:
+        extra += ('+add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.frameRate&value=%.3f)'
+                  % (src_fps / 2))
+    return extra
 
 def read_status():
     """plexfb's progress file -> dict, or {} if not there yet"""
@@ -158,7 +175,7 @@ class Player:
         self.pending = None           # 'stop' | ('seek', seconds)
         self.last_pos = 0.0
         self.lock = threading.Lock()
-        self.title, self.duration, _ = item_info(rk)
+        self.title, self.duration, _, self.src_fps = item_info(rk)
 
     # ---- position ----
     def position(self):
@@ -187,9 +204,7 @@ class Player:
             'protocol': 'http', 'directPlay': 0, 'directStream': 0,
             'videoResolution': '720x480', 'maxVideoBitrate': BITRATE, 'videoQuality': 100,
             'audioBoost': AUDIO_BOOST, 'subtitles': 'burn',
-            # the Plex Web profile allows six-channel AAC; cap audio at stereo so the
-            # server downmixes (and boosts) rather than ffmpeg on the ARM
-            'X-Plex-Client-Profile-Extra': 'add-limitation(scope=videoAudioCodec&scopeName=*&type=upperBound&name=audio.channels&value=2)',
+            'X-Plex-Client-Profile-Extra': profile_extra(self.src_fps),
             'session': sess, 'X-Plex-Session-Identifier': sess,
             'copyts': 1, 'offset': int(self.offset), 'fastSeek': 1,
             'location': 'wan', 'mediaBufferSize': 12288, 'hasMDE': 1,
@@ -214,7 +229,8 @@ class Player:
         fr_tag = (med.get('videoFrameRate') if med is not None else None) or ''
         vs_ = root.find('.//Stream[@streamType="1"]')
         self.fps = FR.get(fr_tag) or (float(vs_.get('frameRate')) if vs_ is not None and vs_.get('frameRate') else 29.97)
-        log('frame rate: %s -> %.3f fps (%.2f fields per frame), offset %ds' % (fr_tag or '?', self.fps, 59.94 / self.fps, self.offset))
+        log('frame rate: %s -> %.3f fps (%.2f fields per frame), offset %ds%s' % (fr_tag or '?', self.fps, 59.94 / self.fps,
+            self.offset, ', source %.3f fps halved' % self.src_fps if self.src_fps >= 45 else ''))
         params.update({k:v for k,v in PLEX_HDRS.items() if k not in ('Accept','X-Plex-Token')})
         url = HOST + '/video/:/transcode/universal/start.mkv?' + urllib.parse.urlencode(params)
 
@@ -589,7 +605,7 @@ def main():
     if len(sys.argv) > 2 and sys.argv[2].replace('.', '').isdigit():
         offset = float(sys.argv[2])
     else:
-        _, dur, offset = item_info(rk)
+        _, dur, offset, _ = item_info(rk)
         if offset: log('resuming from saved position %.0f s' % offset)
     os.nice(-10)
     Player(rk, offset).run()

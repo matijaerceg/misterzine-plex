@@ -44,7 +44,9 @@ already received.
 Frames are decoded with H.264's loop filter on, which keeps block edges from
 building up between keyframes in dark scenes. The presenter fits each frame
 to the 4:3 screen (letterbox or pillarbox, honouring non-square pixels) as it
-copies it into the frame ring.
+copies it into the frame ring. 50 and 60 fps video is requested from the
+server at half its frame rate (25 or 29.97 fps), which the board can keep up
+with.
 
 Surround soundtracks are folded to stereo by the Plex server. A plain fold
 comes out noticeably quieter than a stereo track, so **Surround downmix boost**
