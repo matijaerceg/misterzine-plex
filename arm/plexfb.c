@@ -582,9 +582,11 @@ static void blank_screen(uint32_t seq)
 
 /* g_geo is the reader's once it has read the stream's header (g_geo_ready);
    after that the presenter thread may change the crop, so both hold this
-   lock to change the geometry or to scale into the ring */
+   lock to change the geometry or to scale into the ring. Each change is a
+   new generation; each ring slot notes the one it was scaled with. */
 static pthread_mutex_t g_geo_lock = PTHREAD_MUTEX_INITIALIZER;
-static int g_geo_ready;
+static volatile int g_geo_ready;
+static unsigned g_geo_gen, slot_gen[RING];
 
 static void log_picture(const char *what)
 {
@@ -596,30 +598,40 @@ static void log_picture(const char *what)
 	        y->groups || y->cw == y->dw ? "" : " (C scaler)");
 }
 
-/* presenter thread, between fields: follow the crop file, whatever the
-   stream is doing. Frames already in the ring keep the crop they were
-   scaled with, a frame or two; while the picture stands still (paused, or
-   waiting for the decoder) they and the one on screen are scaled again from
-   the frames kept in RAM, so the change shows at once (a field may show it
-   half drawn). Nothing is published meanwhile: this is the thread that
-   publishes. */
+/* presenter thread, every field: follow the crop file (read every 0.1 s),
+   whatever the stream is doing. While frames flow, those already in the
+   ring keep the crop they were scaled with, a frame or two. While the
+   picture stands still (paused, or waiting for the decoder) the one on
+   screen and any queued behind it that were scaled with an older crop are
+   scaled again from the frames kept in RAM, so a change shows at once, also
+   one made just before the picture stopped (a field may show it half
+   drawn). Nothing is published meanwhile: this is the thread that publishes. */
 static void crop_follow(void)
 {
 	static double next;
-	if (!g_crop_file || now() < next) return;
-	next = now() + 0.1;
-	int c = read_crop(g_crop_file);
-	if (c < 0 || c == g_crop) return;           /* only this thread changes g_crop */
-	pthread_mutex_lock(&g_geo_lock);
-	g_crop = c;
-	if (g_geo_ready) {
-		geometry_setup(&g_geo, g_geo.w, g_geo.h, g_geo.aspect);
-		log_picture("crop changed:");
-		if (g_pause || ring_filled == ring_shown)
-			for (unsigned i = ring_shown == ring_base ? ring_shown : ring_shown - 1; i != ring_filled; i++)
-				scale_frame(&g_geo, ram_slot(i % RING), map + BUF_OFF(i % RING));
-		__sync_synchronize();
+	if (!g_crop_file) return;
+	if (now() >= next) {
+		next = now() + 0.1;
+		int c = read_crop(g_crop_file);
+		if (c >= 0 && c != g_crop) {            /* only this thread changes g_crop */
+			pthread_mutex_lock(&g_geo_lock);
+			g_crop = c;
+			if (g_geo_ready) {
+				geometry_setup(&g_geo, g_geo.w, g_geo.h, g_geo.aspect);
+				g_geo_gen++;
+				log_picture("crop changed:");
+			}
+			pthread_mutex_unlock(&g_geo_lock);
+		}
 	}
+	if (!g_geo_ready || !(g_pause || ring_filled == ring_shown)) return;
+	pthread_mutex_lock(&g_geo_lock);
+	for (unsigned i = ring_shown == ring_base ? ring_shown : ring_shown - 1; i != ring_filled; i++)
+		if (slot_gen[i % RING] != g_geo_gen) {
+			scale_frame(&g_geo, ram_slot(i % RING), map + BUF_OFF(i % RING));
+			slot_gen[i % RING] = g_geo_gen;
+		}
+	__sync_synchronize();
 	pthread_mutex_unlock(&g_geo_lock);
 }
 
@@ -848,6 +860,7 @@ static void *avi_reader(void *arg)
 			double s = now();
 			pthread_mutex_lock(&g_geo_lock);     /* the crop may change between frames */
 			scale_frame(&g_geo, dst, map + BUF_OFF(ring_filled % RING));
+			slot_gen[ring_filled % RING] = g_geo_gen;
 			__sync_synchronize();
 			ring_filled++;
 			pthread_mutex_unlock(&g_geo_lock);
