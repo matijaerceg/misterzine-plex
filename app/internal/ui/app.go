@@ -274,9 +274,9 @@ func (a *App) PlayAt(it *plex.Item, offset int) { a.PlayQueue(it, offset, nil, 0
 // PlayQueue is PlayAt with the items around it (a season's episodes), so
 // the overlay's Prev and Next can move along them. The screen cuts to
 // black at once, with the title, the bar and the times on the overlay
-// while the stream comes up; when the presenter publishes its first
-// frame the UI stops presenting and drives the overlay until playback
-// ends.
+// and the start dot running in the middle while the stream comes up;
+// when the presenter publishes its first frame the dot goes and the UI
+// drives the overlay until playback ends.
 func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) {
 	if a.Player == nil {
 		return
@@ -339,6 +339,9 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 		if offset < 0 {
 			ctl.pos = float64(it.ViewOffset)
 		}
+		if a.osd != nil {
+			ctl.start = newStartDot(os.Getenv("PLEXCRT_START_DOT"))
+		}
 		next, ended := a.playLoop(sess, ctl)
 		if msg, err := os.ReadFile("/tmp/plexplay.stat.err"); err == nil && len(msg) > 0 {
 			a.Notice = plex.Fold(strings.TrimSpace(string(msg)))
@@ -372,9 +375,9 @@ func (a *App) blank() {
 	a.Out.End()
 }
 
-// playLoop runs one playback: spinner until the picture is up, then keys
-// go to the overlay controller. Returns the controller's Next (+1/-1 for
-// the queue, 0 to stop) and whether the stream ran to its end.
+// playLoop runs one playback: the start dot until the picture is up, then
+// keys go to the overlay controller. Returns the controller's Next (+1/-1
+// for the queue, 0 to stop) and whether the stream ran to its end.
 func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 	// The overlay is drawn once per field, right after the core's field
 	// counter moves, and at once after a key. The dot's run and the
@@ -409,7 +412,12 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 				a.Log.Printf("play: %v", err)
 			}
 			if a.osd != nil {
+				// the menus use neither the plane nor the sprites; a start
+				// that never got a picture still has its dot running
 				a.osd.Hide()
+				ctl.pictureUp(a.osd)
+				a.osd.Dot(0, 0, 0, false)
+				a.osd.Bar(0, 0, 0, 0, 0, false)
 			}
 			ended := !stopped && ctl.Next == 0 && ctl.dur > 0 && ctl.pos >= ctl.dur-30
 			return ctl.Next, ended
@@ -447,13 +455,20 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 			}
 			a.idle(time.Now(), up && ctl.paused)
 			if !up {
-				if a.Out.Foreign() || a.Player.Started(a.Starting) {
-					up = true // the video is on screen: the strip runs out on its own
+				// Up is the presenter's first frame, not its launch: it starts
+				// long before the stream gives it a picture. Without the ring
+				// there is no frame to see, only the presenter's status file.
+				if a.Out.Foreign() || a.osd == nil && a.Player.Started(a.Starting) {
+					up = true // the dot goes; the strip runs out over the picture
 					a.Starting = time.Time{}
+					if a.osd != nil {
+						ctl.pictureUp(a.osd)
+					}
 					continue
 				}
 				if a.osd != nil {
-					// black under, the title and the bar over, until the picture
+					// black under, the title and the bar over, the dot in the
+					// middle, until the picture
 					ctl.peekAt, ctl.peekFor = time.Now(), OsdLinger
 					ctl.Tick(time.Now(), a.osd, true)
 				}

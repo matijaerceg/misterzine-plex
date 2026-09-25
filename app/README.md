@@ -7,4 +7,6 @@ and [user guide](../release/README.md).
 Runtime flags include -config, -cache, -player and -ffmpeg for installation
 paths; -version identifies the build and -check validates the installation.
 Developer flags include -dump and -cpuprofile. PLEXCRT_NOPLAY permits UI walks
-without launching media. Synthetic controller input uses /tmp/plexcrt.ctl.
+without launching media. PLEXCRT_START_DOT="speed,path" tunes the dot that runs
+while a playback starts (pixels per field, path width in pixels; default "2,80").
+Synthetic controller input uses /tmp/plexcrt.ctl.

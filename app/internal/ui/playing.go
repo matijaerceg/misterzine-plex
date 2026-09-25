@@ -75,7 +75,8 @@ type Playing struct {
 	skip     *plex.Marker
 	skipOff  bool // the skip button was dismissed for this marker
 	skipAt   time.Time
-	restart  bool // the stream must restart for a new track: seek to here
+	restart  bool      // the stream must restart for a new track: seek to here
+	start    *startDot // until the picture is up: the dot runs in the middle of the black
 }
 
 type listMode struct {
@@ -173,6 +174,15 @@ func NewPlaying(app *App, it *plex.Item, queue []*plex.Item, idx int, send func(
 		}
 	}
 	return p
+}
+
+// pictureUp ends the start: the presenter's first frame is on screen, so
+// the dot goes and the strip runs out over the picture.
+func (p *Playing) pictureUp(osd OSD) {
+	if p.start != nil {
+		p.start.stop(osd)
+		p.start = nil
+	}
 }
 
 // status reads the launcher's position file.
@@ -665,7 +675,11 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 			h := p.peekH
 			p.painter.show(osd, 0, 480-h, &gfx.Canvas{W: 720, H: h, Pix: p.canvas.Pix[:720*h*4]}, p.alpha[:720*h])
 		}
-		if p.scrub && p.dur > 0 {
+		if p.start != nil {
+			if field {
+				p.start.step(osd)
+			}
+		} else if p.scrub && p.dur > 0 {
 			// the dot: loaded at the press (hidden, so the run starts from
 			// here), shown once the hold runs; the core places it meanwhile
 			if vx == 0 || !p.dotOn {

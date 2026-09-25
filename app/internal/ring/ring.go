@@ -181,8 +181,11 @@ func cadenceTarget(previous, current, fields uint32) (uint32, bool) {
 }
 
 // Foreign reports whether another process (the video presenter) has
-// published a frame since our last End.
-func (r *Ring) Foreign() bool { return atomic.LoadUint32(&r.hdr[1]) != r.seq }
+// published a frame since our last End. A header wiped by a framebuffer
+// mode write has lost its magic and is no one's frame.
+func (r *Ring) Foreign() bool {
+	return atomic.LoadUint32(&r.hdr[0]) == magic && atomic.LoadUint32(&r.hdr[1]) != r.seq
+}
 
 // Present copies a canvas into the next slot and publishes it.
 func (r *Ring) Present(c *gfx.Canvas) error {
@@ -427,7 +430,7 @@ func (o *Overlay) Dot(x, y int, rgb uint32, on bool) {
 // DotRun makes the core move the dot vx pixels every field (0 stops),
 // within xmin..xmax. The dot's place is then the core's: read it with DotX.
 func (o *Overlay) DotRun(vx, xmin, xmax int) {
-	v := o.r.hdr[25] & 1 << 28
+	v := o.r.hdr[25] & (1 << 28) // the load bit stays as Dot left it
 	v |= uint32(max(0, xmin)&0x3FF) | uint32(max(0, xmax)&0x3FF)<<10 | uint32(vx&0xFF)<<20
 	atomic.StoreUint32(&o.r.hdr[25], v)
 }
