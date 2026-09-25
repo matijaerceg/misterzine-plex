@@ -3,30 +3,46 @@
 # Both test suites read this file, so the pattern the app draws and the
 # picture the presenter shows cannot drift apart.
 #
-# left top right bottom width   aspect      x   y   w   h
-# (edges inside the raster's; width in thousandths; aspect as a fraction)
+# left top right bottom width   aspect      lines   x   y   w   h
+# (edges inside the raster's; width in thousandths; aspect as a fraction;
+# lines is the frame's own height)
 
-# the whole raster, as shipped before calibration existed
-0 0 0 0 1000        640/480     0   0   720 480   # 4:3
-0 0 0 0 1000        4/3         0   0   720 480   # 4:3 DVD, aspect from the header
-0 0 0 0 1000        644/480     0   0   720 480   # a hair wider than 4:3: lines kept 1:1
-0 0 0 0 1000        636/480     0   0   720 480   # a hair narrower: no side slivers
-0 0 0 0 1000        720/404     0   60  720 360   # 16:9
-0 0 0 0 1000        16/9        0   60  720 360   # anamorphic 16:9 DVD
-0 0 0 0 1000        720/306     0   104 720 272   # 2.35:1
-0 0 0 0 1000        480/360     0   0   720 480   # small 4:3
-0 0 0 0 1000        6/5         36  0   648 480   # narrower than 4:3: pillarbox
-0 0 0 0 1000        270/480     208 0   304 480   # portrait
+# the whole raster: every frame lands as it did before calibration existed
+0 0 0 0 1000        640/480     480     0   0   720 480   # 4:3
+0 0 0 0 1000        4/3         480     0   0   720 480   # 4:3 DVD, aspect from the header
+0 0 0 0 1000        644/480     480     0   0   720 480   # a hair wider than 4:3: lines kept 1:1
+0 0 0 0 1000        636/480     480     0   0   720 480   # a hair narrower: no side slivers
+0 0 0 0 1000        630/480     480     0   0   720 480   # narrower still, within 12 pixels of full width
+0 0 0 0 1000        629/480     480     0   0   720 480
+0 0 0 0 1000        628/480     480     6   0   706 480   # beyond that: pillarbox
+0 0 0 0 1000        652/480     480     0   0   720 480   # wider: its 480 lines kept 1:1
+0 0 0 0 1000        656/480     480     0   6   720 468   # beyond 2%: letterbox
+0 0 0 0 1000        636/476     476     0   2   720 476   # near 4:3 with its own 476 lines kept
+0 0 0 0 1000        648/360     360     0   60  720 360   # 360 lines kept rather than 356
+0 0 0 0 1000        720/404     404     0   60  720 360   # 16:9
+0 0 0 0 1000        16/9        480     0   60  720 360   # anamorphic 16:9 DVD
+0 0 0 0 1000        720/306     306     0   104 720 272   # 2.35:1
+0 0 0 0 1000        480/360     360     0   0   720 480   # small 4:3
+0 0 0 0 1000        6/5         480     36  0   648 480   # narrower than 4:3: pillarbox
+0 0 0 0 1000        270/480     480     208 0   304 480   # portrait
+# a deliberate change: taller than the raster and a hair off 4:3 now fills
+# like any other 4:3 frame (before: 476 lines at y 2). Plex sends 480 at most.
+0 0 0 0 1000        1290/960    960     0   0   720 480
 
 # edges moved in for overscan
-16 12 16 12 1000    4/3         18  12  684 456   # 4:3 fills the height
-16 12 16 12 1000    720/404     16  68  688 344   # 16:9 fills the width
-20 10 8 14 1000     4/3         24  10  684 456   # off-centre set
-16 10 16 10 1000    4/3         16  10  688 460   # two lines short of the area: fill it
-120 80 120 80 1150  720/306     120 160 480 158   # the limits
+16 12 16 12 1000    4/3         480     18  12  684 456   # 4:3 fills the height
+16 12 16 12 1000    720/404     404     16  68  688 344   # 16:9 fills the width
+20 10 8 14 1000     4/3         480     24  10  684 456   # off-centre set
+16 10 16 10 1000    4/3         480     16  10  688 460   # two lines short of the area: fill it
+0 4 0 4 1000        4/3         480     6   4   708 472   # 480 lines don't fit: scaled, not cut
+0 2 0 6 1000        636/476     476     6   2   708 472   # nor do 476
+0 2 0 2 1000        636/476     476     2   2   714 476   # into exactly 476 they go 1:1
+120 80 120 80 1150  720/306     306     120 160 480 158   # the limits
 
 # width corrected for a set that draws too wide or too narrow
-0 0 0 0 980         4/3         6   0   706 480   # too wide: narrower picture
-0 0 0 0 1020        4/3         0   4   720 470   # too narrow: can't widen, so shorter
-0 0 0 0 1020        720/404     0   64  720 352
-0 0 0 0 850         270/480     230 0   258 480
+0 0 0 0 980         4/3         480     6   0   706 480   # too wide: narrower picture
+0 0 0 0 980         636/476     476     6   2   706 476   # ...keeping its own 476 lines
+0 0 0 0 1020        4/3         480     0   4   720 470   # too narrow: can't widen, so shorter
+0 0 0 0 1010        644/480     480     0   2   720 476   # not snapped back to 480 lines
+0 0 0 0 1020        720/404     404     0   64  720 352
+0 0 0 0 850         270/480     480     230 0   258 480

@@ -49,21 +49,54 @@ static void fit_cases(void)
 	while (fgets(line, sizeof line, f)) {
 		struct screen s;
 		double num, den;
-		int x, y, w, h;
-		if (sscanf(line, "%d %d %d %d %d %lf/%lf %d %d %d %d", &s.l, &s.t, &s.r, &s.b, &s.width,
-		           &num, &den, &x, &y, &w, &h) != 11) continue;
+		int lines, x, y, w, h;
+		if (sscanf(line, "%d %d %d %d %d %lf/%lf %d %d %d %d %d", &s.l, &s.t, &s.r, &s.b, &s.width,
+		           &num, &den, &lines, &x, &y, &w, &h) != 12) continue;
 		char text[64];
 		snprintf(text, sizeof text, "%d,%d,%d,%d,%d", s.l, s.t, s.r, s.b, s.width);
 		CHECK(parse_screen(text, &g_screen), "%s: not accepted", text);
-		/* a frame of that shape at 640 wide, as Plex would send it */
-		int fh = 2 * (int)lround(640 * den / num / 2);
-		if (fh > MAX_SRC_H) fh = MAX_SRC_H;
-		fits(640, fh, num / den, x, y, w, h);
+		/* a frame of that many lines; its width does not move it */
+		int fw = 2 * (int)lround(lines * num / den / 2);
+		fits(fw < 16 ? 16 : fw > MAX_SRC_W ? MAX_SRC_W : fw, lines, num / den, x, y, w, h);
 		n++;
 	}
 	fclose(f);
-	CHECK(n >= 15, "only %d fit cases read from %s", n, path);
+	CHECK(n >= 30, "only %d fit cases read from %s", n, path);
 	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
+}
+
+/* fit() as it was before calibration (commit 71cfd60^) */
+static void old_fit(double aspect, int sh, int *dx, int *dy, int *dw, int *dh)
+{
+	int w = W, h = H;
+	if (aspect > 4.0 / 3.0) h = 2 * (int)lround(H * (4.0 / 3.0) / aspect / 2);
+	else                    w = 2 * (int)lround(W * aspect / (4.0 / 3.0) / 2);
+	if (w < 16) w = 16;
+	if (h < 16) h = 16;
+	if (w >= W - W / 60) w = W;
+	if (!(sh & 1) && sh <= H && abs(h - sh) <= H / 50) h = sh;
+	*dw = w; *dh = h; *dx = (W - w) / 2 & ~1; *dy = (H - h) / 2 & ~1;
+}
+
+/* Without calibration every frame Plex can send (even sizes up to 720x480,
+   square pixels) lands where it did before. The one known difference: a
+   frame a hair wider than 4:3 with far fewer than 480 lines (484x360) now
+   fills the screen like 4:3 instead of leaving 2-4 lines of border. */
+static void default_unchanged(void)
+{
+	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
+	int same = 0, known = 0, other = 0;
+	for (int sh = 16; sh <= H; sh += 2)
+		for (int sw = 16; sw <= W; sw += 2) {
+			double a = (double)sw / sh;
+			int ox, oy, ow, oh, x, y, w, h;
+			old_fit(a, sh, &ox, &oy, &ow, &oh);
+			fit(&g_screen, a, sh, &x, &y, &w, &h);
+			if (ox == x && oy == y && ow == w && oh == h) { same++; continue; }
+			if (a > 4.0 / 3.0 && a * 3 / 4 <= 61.0 / 60 && w == W && h == H) { known++; continue; }
+			if (other++ < 5) printf("  %dx%d: was %dx%d at %d,%d, now %dx%d at %d,%d\n", sw, sh, ow, oh, ox, oy, w, h, x, y);
+		}
+	CHECK(!other, "default placement changed for %d frame sizes (%d unchanged, %d known)", other, same, known);
 }
 
 static void screen_settings(void)
@@ -250,6 +283,7 @@ int main(int argc, char **argv)
 	/* frame shapes Plex sends and a few it could, on the whole raster and in
 	   calibrated picture areas */
 	fit_cases();
+	default_unchanged();
 	fits(640, 480, 0, 0, 0, 720, 480);                  /* no aspect in the header: square pixels */
 	fits(720, 480, 4.0 / 3.0, 0, 0, 720, 480);          /* 4:3 DVD, aspect from the header */
 	fits(720, 480, 16.0 / 9.0, 0, 60, 720, 360);        /* anamorphic 16:9 DVD */

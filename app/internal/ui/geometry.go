@@ -50,28 +50,39 @@ func (g Geometry) Env() string {
 	return fmt.Sprintf("%d,%d,%d,%d,%d", g.Left, g.Top, g.Right, g.Bottom, g.Width)
 }
 
-// Fit is where the presenter puts a frame of display aspect `aspect`: the
-// largest rectangle of that shape inside the picture area, centred. It must
-// match fit() in arm/plexfb.c; both are tested against
+// Fit is where the presenter puts a frame of display aspect `aspect` and
+// `lines` lines: the largest rectangle of that shape inside the picture area,
+// centred. It must match fit() in arm/plexfb.c; both are tested against
 // tools/testdata/fit_cases.txt.
-func (g Geometry) Fit(aspect float64) (x, y, w, h int) {
+func (g Geometry) Fit(aspect float64, lines int) (x, y, w, h int) {
 	g = g.Normal()
 	aw, ah := 720-g.Left-g.Right, 480-g.Top-g.Bottom
-	px := 8000.0 / 9 / float64(g.Width) // a pixel's width, in lines: the raster is 4:3
-	if math.Abs(aspect*3/4-1) <= 1.0/60 {
+	// a 4:3 frame's width at the area's height and its height at the area's
+	// width, in the same order of operations as the presenter
+	fw := float64(ah) * 1.5 * float64(g.Width) / 1000
+	fh := float64(aw) / 1.5 * 1000 / float64(g.Width)
+	// a hair off 4:3 is 4:3: 707/720 of it to 1/60 over
+	r := aspect * 3 / 4
+	four3 := r >= 707.0/720 && r <= 61.0/60
+	if four3 {
 		aspect = 4.0 / 3
 	}
 	w, h = aw, ah
-	if aspect*float64(ah) > float64(aw)*px {
-		h = 2 * int(math.Round(float64(aw)*px/aspect/2))
+	if aspect > 4.0/3*float64(aw)/fw {
+		h = 2 * int(math.Round(fh*(4.0/3)/aspect/2))
 	} else {
-		w = 2 * int(math.Round(aspect*float64(ah)/px/2))
+		w = 2 * int(math.Round(fw*aspect/(4.0/3)/2))
 	}
 	if aw-w <= 2 {
 		w = aw
 	}
 	if ah-h <= 2 {
 		h = ah
+	}
+	// within 2% of the frame's own line count its lines stay 1:1, except a
+	// 4:3 frame shortened by a width correction
+	if (!four3 || h == ah) && lines&1 == 0 && lines <= ah && abs(h-lines) <= 480/50 {
+		h = lines
 	}
 	w, h = max(w, 16), max(h, 16)
 	return g.Left + ((aw-w)/2)&^1, g.Top + ((ah-h)/2)&^1, w, h
@@ -96,6 +107,7 @@ type Calibrate struct {
 	sel        int
 	sqW, sqH   int // the square, in pixels and lines
 	sqW0, sqH0 int // its size on opening: the bottom-left corner stays put
+	width0     int // the saved width, which that size only approximates
 }
 
 const (
@@ -119,7 +131,7 @@ func NewCalibrate(a *App) *Calibrate {
 	// it, as wide as the saved width says a square is
 	s.sqH = min(288, (480-s.g.Top-s.g.Bottom-60)&^1)
 	s.sqW = 2 * int(math.Round(float64(s.sqH)*9/8*float64(s.g.Width)/1000/2))
-	s.sqW0, s.sqH0 = s.sqW, s.sqH
+	s.sqW0, s.sqH0, s.width0 = s.sqW, s.sqH, s.g.Width
 	return s
 }
 
@@ -153,6 +165,9 @@ func (s *Calibrate) Key(ev input.Event, now time.Time) {
 	}
 	dx := map[input.Key]int{input.Right: 1, input.Left: -1}[ev.Key] * geometryStep
 	dy := map[input.Key]int{input.Down: 1, input.Up: -1}[ev.Key] * geometryStep
+	if dx == 0 && dy == 0 {
+		return // L, R and the like: nothing to move
+	}
 	g := &s.g
 	switch s.sel {
 	case calTop:
@@ -174,6 +189,9 @@ func (s *Calibrate) Key(ev input.Event, now time.Time) {
 		if width := squareWidth(w, h); width >= GeometryWidthMin && width <= GeometryWidthMax {
 			s.sqW, s.sqH, g.Width = w, h, width
 		}
+		if s.sqW == s.sqW0 && s.sqH == s.sqH0 {
+			g.Width = s.width0 // back where it started: exactly what was saved
+		}
 	}
 	*g = g.Normal()
 }
@@ -186,7 +204,7 @@ func (s *Calibrate) Draw(c *gfx.Canvas, now time.Time) bool {
 	g := s.g.Normal()
 	f := s.app.F
 	c.Fill(0, 0, c.W, c.H, gfx.Black)
-	px, py, pw, ph := g.Fit(4.0 / 3)
+	px, py, pw, ph := g.Fit(4.0/3, 480)
 	c.Fill(px, py, pw, ph, calFill)
 
 	// the picture area's edges: 2 lines across (1 flickers at 480i), 4
@@ -220,10 +238,7 @@ func (s *Calibrate) Draw(c *gfx.Canvas, now time.Time) bool {
 		chevronRight(c, ax+aw-16, my-6, gfx.Amber)
 	}
 
-	// the square grows and shrinks from its bottom-left corner
-	sx := mx - s.sqW0/2
-	bottom := (my + s.sqH0/2) &^ 1
-	sy := bottom - s.sqH
+	sx, sy, bottom := s.square(g)
 	sq := gfx.GreyHi
 	if s.sel == calCorner {
 		sq = gfx.Amber
@@ -278,10 +293,23 @@ func (s *Calibrate) Draw(c *gfx.Canvas, now time.Time) bool {
 	return false
 }
 
+// square is where the square goes: it grows and shrinks from its bottom-left
+// corner, which starts it centred in the picture area, unless that would put
+// its top or the corner's arrow off the screen.
+func (s *Calibrate) square(g Geometry) (x, top, bottom int) {
+	mx, my := g.Left+(720-g.Left-g.Right)/2, g.Top+(480-g.Top-g.Bottom)/2
+	bottom = max((my+s.sqH0/2)&^1, s.sqH+30)
+	x = min(mx-s.sqW0/2, 720-8-s.sqW-cornerArrowW)
+	return x, bottom - s.sqH, bottom
+}
+
 // centre draws one line centred on cx, cut to the circle's inside at that height.
 func (s *Calibrate) centre(c *gfx.Canvas, cx, y int, f *gfx.Font, col gfx.Color, text string, inside func(y0, y1 int) int) {
 	s.app.textCenterOn(c, cx, y, f, col, calFill, f.Fit(text, inside(y, y+f.Height())-8))
 }
+
+// cornerArrowW is how far cornerArrow reaches right of the corner.
+const cornerArrowW = 56
 
 // cornerArrow points down and left at (x, y) from above and to the right:
 // a head of two strokes at the tip and a shaft running up at 45 degrees on

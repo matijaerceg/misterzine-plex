@@ -327,22 +327,33 @@ static int parse_screen(const char *s, struct screen *out)
 	return 1;
 }
 
-/* where a frame of display aspect `aspect` goes: the largest rectangle of
-   that shape inside the picture area, centred. The raster is 4:3, so a pixel
-   is 8/9 of a line wide, times the width correction. Keep in step with
-   Geometry.Fit in app/internal/ui/geometry.go (tools/testdata/fit_cases.txt). */
-static void fit(const struct screen *s, double aspect, int *dx, int *dy, int *dw, int *dh)
+/* where a frame of display aspect `aspect` and `sh` lines goes: the largest
+   rectangle of that shape inside the picture area, centred. The raster is
+   4:3, so a pixel is 8/9 of a line wide, times the width correction. Keep in
+   step with Geometry.Fit in app/internal/ui/geometry.go
+   (tools/testdata/fit_cases.txt). */
+static void fit(const struct screen *s, double aspect, int sh, int *dx, int *dy, int *dw, int *dh)
 {
 	int aw = W - s->l - s->r, ah = H - s->t - s->b;
-	double px = 8000.0 / 9.0 / s->width;       /* a pixel's width, in lines */
-	/* within 1/60 of 4:3 is 4:3: frames a hair off it (644x480, 636x480)
-	   fill the screen, lines 1:1, with no slivers of border */
-	if (fabs(aspect * 3 / 4 - 1) <= 1.0 / 60) aspect = 4.0 / 3.0;
+	/* a 4:3 frame's width at the area's height, and its height at the area's
+	   width (720 and 480 uncalibrated, exactly, so the sums below round as
+	   they did before calibration existed) */
+	double fw = ah * 1.5 * s->width / 1000, fh = aw / 1.5 * 1000 / s->width;
+	/* a hair off 4:3 is 4:3: frames like 644x480 and 636x480 fill the screen,
+	   lines 1:1, with no slivers of border. Narrower down to 707/720 of it
+	   (what rounded to within 12 pixels of full width), wider up to 1/60. */
+	double r = aspect * 3 / 4;
+	int four3 = r >= 707.0 / 720 && r <= 61.0 / 60;
+	if (four3) aspect = 4.0 / 3.0;
 	int w = aw, h = ah;
-	if (aspect * ah > aw * px) h = 2 * (int)lround(aw * px / aspect / 2);
-	else                       w = 2 * (int)lround(aspect * ah / px / 2);
+	if (aspect > 4.0 / 3.0 * aw / fw) h = 2 * (int)lround(fh * (4.0 / 3.0) / aspect / 2);
+	else                              w = 2 * (int)lround(fw * aspect / (4.0 / 3.0) / 2);
 	if (aw - w <= 2) w = aw;             /* a rounding step short: fill */
 	if (ah - h <= 2) h = ah;
+	/* within 2% of the frame's own line count, keep its lines 1:1: a resample
+	   that small would only soften the picture (648x360). Not for a 4:3 frame
+	   shortened by a width correction, which this would undo. */
+	if ((!four3 || h == ah) && !(sh & 1) && sh <= ah && abs(h - sh) <= H / 50) h = sh;
 	if (w < 16) w = 16;
 	if (h < 16) h = 16;
 	*dw = w; *dh = h; *dx = s->l + ((aw - w) / 2 & ~1); *dy = s->t + ((ah - h) / 2 & ~1);
@@ -355,7 +366,7 @@ static void geometry_setup(struct geometry *g, int w, int h, double aspect)
 	int w2 = (w + 1) / 2, h2 = (h + 1) / 2;
 	if (!(aspect > 0.25 && aspect < 4.0)) aspect = (double)w / h;
 	g->w = w; g->h = h; g->aspect = aspect;
-	fit(&g_screen, aspect, &dx, &dy, &dw, &dh);
+	fit(&g_screen, aspect, h, &dx, &dy, &dw, &dh);
 	plane_setup(&g->p[0], w, h, 0, 0, w, h, dx, dy, dw, dh, W, H, 16);
 	for (int i = 1; i < 3; i++)
 		plane_setup(&g->p[i], w2, h2, 0, 0, w2, h2, dx / 2, dy / 2, dw / 2, dh / 2, W / 2, H / 2, 128);

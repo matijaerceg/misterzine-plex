@@ -31,10 +31,10 @@ func TestGeometryFitMatchesPresenterCases(t *testing.T) {
 	for sc.Scan() {
 		line, _, _ := strings.Cut(sc.Text(), "#")
 		fields := strings.Fields(line)
-		if len(fields) != 10 {
+		if len(fields) != 11 {
 			continue
 		}
-		v := make([]int, 0, 9)
+		v := make([]int, 0, 10)
 		var num, den float64
 		for i, s := range fields {
 			if i == 5 {
@@ -53,13 +53,13 @@ func TestGeometryFitMatchesPresenterCases(t *testing.T) {
 		if g.Normal() != g {
 			t.Errorf("%q: case outside the limits", sc.Text())
 		}
-		x, y, w, h := g.Fit(num / den)
-		if x != v[5] || y != v[6] || w != v[7] || h != v[8] {
+		x, y, w, h := g.Fit(num/den, v[5])
+		if x != v[6] || y != v[7] || w != v[8] || h != v[9] {
 			t.Errorf("%q: got %d %d %d %d", sc.Text(), x, y, w, h)
 		}
 		n++
 	}
-	if n < 15 {
+	if n < 30 {
 		t.Fatalf("only %d cases read", n)
 	}
 }
@@ -140,6 +140,40 @@ func TestCalibrateCornerSetsTheWidthFromTheSquare(t *testing.T) {
 	}
 	if s.sqW > w0+72 || s.sqH > h0+64 || (480-s.sqH0)/2-(s.sqH-s.sqH0) < 16 {
 		t.Fatalf("square grew to %dx%d from %dx%d", s.sqW, s.sqH, w0, h0)
+	}
+}
+
+func TestCalibrateSquareStaysOnScreen(t *testing.T) {
+	a, _ := calibrateApp(t)
+	for _, g := range []Geometry{{Bottom: 80, Width: 1150}, {Top: 80, Width: 850}, {Left: 120, Width: 1150}, {Right: 120, Bottom: 80, Width: 1150}} {
+		a.Cfg.Geometry = g
+		s := NewCalibrate(a)
+		s.sel = calCorner
+		for i := 0; i < 60; i++ {
+			press(s, input.Up, input.Right)
+		}
+		x, top, bottom := s.square(s.g)
+		if top < 26 || x < 0 || x+s.sqW+cornerArrowW > 720 || bottom > 480 {
+			t.Errorf("%+v: %dx%d square at x %d, lines %d..%d", g, s.sqW, s.sqH, x, top, bottom)
+		}
+	}
+}
+
+func TestCalibrateOnlyTheDpadChangesTheWidth(t *testing.T) {
+	a, _ := calibrateApp(t)
+	a.Cfg.Geometry = Geometry{Top: 80, Bottom: 80, Width: 1000}
+	s := NewCalibrate(a)
+	s.sel = calCorner
+	if squareWidth(s.sqW, s.sqH) == 1000 {
+		t.Fatal("pick a geometry whose opening square only approximates the width")
+	}
+	press(s, input.JumpFwd, input.JumpBack)
+	if s.g.Width != 1000 {
+		t.Fatalf("L and R changed the width to %d", s.g.Width)
+	}
+	press(s, input.Right, input.Left, input.Up, input.Down)
+	if s.g.Width != 1000 {
+		t.Fatalf("back at the opening square, width %d", s.g.Width)
 	}
 }
 
