@@ -24,6 +24,7 @@ it is not a guarantee of exclusive access.
 
 Primary output is NTSC 15 kHz 480i. Component/Y-C profiles enforce 480i; RGB-only
 CRTs require Safe 480i in the OSD. HDMI 480p requires confirmation. PAL and HDMI
-full-height scaling refinements remain incomplete. Higher experimental bitrates
-may stall. The artwork/theme cache has no disk quota. Show transitions can miss
+full-height scaling refinements remain incomplete. Plex sends 50 and 60 fps
+sources at their full frame rate, more than the board decodes, so they stutter.
+The artwork/theme cache has no disk quota. Show transitions can miss
 their target cadence; no universal 60 fps guarantee is made.

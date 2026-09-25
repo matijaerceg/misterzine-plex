@@ -78,20 +78,36 @@ func LoadConfig(path string) *Config {
 	return c
 }
 
-// The tested 3 Mbps Plex request produces about 2 Mbps of video. Dense
-// 30 fps content may need a lower choice; this is not a universal limit.
+// At 480 lines a Plex server sends at most about 2 Mbps of video: every cap
+// from 2.5 Mbps up gets the same stream. Lower caps get less, as labelled
+// (measured on Plex Media Server 1.43, the video rate without the sound).
 const DefaultBitrate = 3000
-const MaxBitrate = 6000
+const MaxBitrate = 3000
 
-// Bitrates are the caps offered, in kbit/s.
-var Bitrates = []int{1000, 1500, 2000, 3000, 4500, 6000}
+// Bitrates are the caps offered, in kbit/s, with what each one delivers.
+var Bitrates = []struct {
+	Kbps  int
+	Label string
+}{{1000, "0.4 Mbps, low res"}, {1500, "1 Mbps"}, {2000, "1.2 Mbps"}, {3000, "Max (2 Mbps)"}}
 
-// BitrateKbps is the cap in force.
+// BitrateKbps is the cap in force. Older builds offered 4.5 and 6 Mbps; the
+// server sent those the same stream as 3 Mbps, so they read as the maximum.
 func (c *Config) BitrateKbps() int {
 	if c.Bitrate <= 0 {
 		return DefaultBitrate
 	}
 	return min(c.Bitrate, MaxBitrate)
+}
+
+// bitrateIndex is the offered cap at or below the one in force.
+func (c *Config) bitrateIndex() int {
+	i := 0
+	for j, b := range Bitrates {
+		if b.Kbps <= c.BitrateKbps() {
+			i = j
+		}
+	}
+	return i
 }
 
 // AudioBoosts are the downmix gains offered, as the Plex transcoder's

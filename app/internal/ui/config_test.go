@@ -128,10 +128,40 @@ func TestConnectionSaveFailureDoesNotSignIn(t *testing.T) {
 }
 
 func TestBitrateClampsOlderSavedHighValues(t *testing.T) {
-	for _, tc := range []struct{ saved, want int }{{0, 3000}, {1000, 1000}, {1500, 1500}, {2000, 2000}, {3000, 3000}, {4500, 4500}, {6000, 6000}, {20000, 6000}} {
+	for _, tc := range []struct{ saved, want int }{{0, 3000}, {1000, 1000}, {1500, 1500}, {2000, 2000}, {3000, 3000}, {4500, 3000}, {6000, 3000}, {20000, 3000}} {
 		c := Config{Bitrate: tc.saved}
 		if c.BitrateKbps() != tc.want {
 			t.Fatalf("saved %d: got %d, want %d", tc.saved, c.BitrateKbps(), tc.want)
 		}
+	}
+}
+
+func TestBitrateOptionShowsAndStepsOfferedCaps(t *testing.T) {
+	for _, tc := range []struct {
+		saved int
+		label string
+	}{{0, "Max (2 Mbps)"}, {6000, "Max (2 Mbps)"}, {2500, "1.2 Mbps"}, {1500, "1 Mbps"}, {1000, "0.4 Mbps, low res"}} {
+		c := Config{Bitrate: tc.saved}
+		if got := Bitrates[c.bitrateIndex()].Label; got != tc.label {
+			t.Fatalf("saved %d: shows %q, want %q", tc.saved, got, tc.label)
+		}
+	}
+	a := &App{Cfg: &Config{}}
+	o := &Options{app: a}
+	var row option
+	for _, it := range o.items() {
+		if it.label == "Video bitrate" {
+			row = it
+		}
+	}
+	row.step(+1)
+	if a.Cfg.Bitrate != 3000 || row.val() != "Max (2 Mbps)" {
+		t.Fatalf("stepping up from the default: %d %q", a.Cfg.Bitrate, row.val())
+	}
+	for i := 0; i < 5; i++ {
+		row.step(-1)
+	}
+	if a.Cfg.Bitrate != 1000 || row.val() != "0.4 Mbps, low res" {
+		t.Fatalf("stepping down to the end: %d %q", a.Cfg.Bitrate, row.val())
 	}
 }

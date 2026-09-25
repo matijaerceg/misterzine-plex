@@ -39,20 +39,10 @@ func (o *Options) items() []option {
 		{label: "Only show 4:3 media", get: func() bool { return cfg.FourThree }, set: func(v bool) { cfg.FourThree = v }, after: o.app.Reconfigured, busy: o.app.homeUpdating},
 		{label: "Autoplay next episode", get: func() bool { return !cfg.NoAutoplay }, set: func(v bool) { cfg.NoAutoplay = !v }},
 		{label: "Video bitrate", val: func() string {
-			value := mbps(cfg.BitrateKbps())
-			if cfg.BitrateKbps() > DefaultBitrate {
-				value += " (experimental)"
-			}
-			return value
+			return Bitrates[cfg.bitrateIndex()].Label
 		}, step: func(d int) {
-			i := 0
-			for j, b := range Bitrates {
-				if b == cfg.BitrateKbps() {
-					i = j
-				}
-			}
-			i = max(0, min(len(Bitrates)-1, i+d))
-			cfg.Bitrate = Bitrates[i]
+			i := max(0, min(len(Bitrates)-1, cfg.bitrateIndex()+d))
+			cfg.Bitrate = Bitrates[i].Kbps
 		}},
 		{label: "Surround downmix boost", val: func() string {
 			for _, b := range AudioBoosts {
@@ -121,15 +111,6 @@ func (o *Options) items() []option {
 		return o.app.Version
 	}, do: func() {}})
 	return items
-}
-
-// mbps writes a kbit/s figure the way the other apps do: "4.5 Mbps".
-func mbps(kbps int) string {
-	whole, frac := kbps/1000, (kbps%1000)/100
-	if frac == 0 {
-		return itoa(whole) + " Mbps"
-	}
-	return itoa(whole) + "." + itoa(frac) + " Mbps"
 }
 
 // NewOptions makes the settings screen.

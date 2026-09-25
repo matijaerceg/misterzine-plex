@@ -33,10 +33,18 @@ Detailed behavior and display settings. For everyday help, see the
 
 ### Sound and playback quality
 
-Theme music and navigation taps can be disabled in Options. The default bitrate
-is 3 Mbps; try 1.5–2 Mbps if playback stalls. The 4.5 and 6 Mbps choices are
-experimental and may cause video or audio stalls. This setting is a request
-ceiling, not a measured stream rate.
+Theme music and navigation taps can be disabled in Options. **Video bitrate**
+defaults to Max: at 480 lines a Plex server sends at most about 2 Mbps of
+video, whatever higher ceiling is requested. The lower steps (1.2 Mbps, 1 Mbps,
+and 0.4 Mbps at a lower resolution) are for slow connections to the server;
+the labels are the video rates measured with Plex Media Server 1.43. Settings
+of 4.5 or 6 Mbps saved by older versions read as Max, which is the stream they
+already received.
+
+Frames are decoded with H.264's loop filter on, which keeps block edges from
+building up between keyframes in dark scenes. The presenter fits each frame
+to the 4:3 screen (letterbox or pillarbox, honouring non-square pixels) as it
+copies it into the frame ring.
 
 Surround soundtracks are folded to stereo by the Plex server. A plain fold
 comes out noticeably quieter than a stereo track, so **Surround downmix boost**
