@@ -364,8 +364,8 @@ static void fit(const struct screen *s, double aspect, int sh, int *dx, int *dy,
  * anything wider than 14:9 go) or "fill" (whatever overhangs the picture
  * area goes, so it has no borders: the sides of a wide picture on a 4:3
  * area, the top and bottom of a narrow one). The app writes the file before
- * playback and again when the viewer changes the crop; the reader thread
- * reads it between frames. Keep the thresholds in step with Geometry.Cuts
+ * playback and again when the viewer changes the crop; the presenter thread
+ * reads it between fields (crop_follow). Keep the thresholds in step with Geometry.Cuts
  * in app/internal/ui/crop.go (tools/testdata/crop_cases.txt). */
 enum { CROP_OFF, CROP_14_9, CROP_FILL };
 static const char *const crop_names[] = { "off", "14:9", "fill" };
@@ -580,6 +580,49 @@ static void blank_screen(uint32_t seq)
 	publish(slot, seq);
 }
 
+/* g_geo is the reader's once it has read the stream's header (g_geo_ready);
+   after that the presenter thread may change the crop, so both hold this
+   lock to change the geometry or to scale into the ring */
+static pthread_mutex_t g_geo_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_geo_ready;
+
+static void log_picture(const char *what)
+{
+	const struct plane_map *y = &g_geo.p[0];
+	fprintf(stderr, "plexfb: %s %dx%d, aspect %.3f, crop %s %dx%d at %d,%d -> %dx%d at %d,%d "
+	        "(area %d,%d,%d,%d, width %d)%s\n",
+	        what, g_geo.w, g_geo.h, g_geo.aspect, crop_names[g_crop], y->cw, y->ch, y->cx, y->cy,
+	        y->dw, y->dh, y->dx, y->dy, g_screen.l, g_screen.t, g_screen.r, g_screen.b, g_screen.width,
+	        y->groups || y->cw == y->dw ? "" : " (C scaler)");
+}
+
+/* presenter thread, between fields: follow the crop file, whatever the
+   stream is doing. Frames already in the ring keep the crop they were
+   scaled with, a frame or two; while the picture stands still (paused, or
+   waiting for the decoder) they and the one on screen are scaled again from
+   the frames kept in RAM, so the change shows at once (a field may show it
+   half drawn). Nothing is published meanwhile: this is the thread that
+   publishes. */
+static void crop_follow(void)
+{
+	static double next;
+	if (!g_crop_file || now() < next) return;
+	next = now() + 0.1;
+	int c = read_crop(g_crop_file);
+	if (c < 0 || c == g_crop) return;           /* only this thread changes g_crop */
+	pthread_mutex_lock(&g_geo_lock);
+	g_crop = c;
+	if (g_geo_ready) {
+		geometry_setup(&g_geo, g_geo.w, g_geo.h, g_geo.aspect);
+		log_picture("crop changed:");
+		if (g_pause || ring_filled == ring_shown)
+			for (unsigned i = ring_shown == ring_base ? ring_shown : ring_shown - 1; i != ring_filled; i++)
+				scale_frame(&g_geo, ram_slot(i % RING), map + BUF_OFF(i % RING));
+		__sync_synchronize();
+	}
+	pthread_mutex_unlock(&g_geo_lock);
+}
+
 static void present_loop(double fps, uint32_t seq)
 {
 	/* let the reader get a head start so the first frames are not starved */
@@ -599,6 +642,7 @@ static void present_loop(double fps, uint32_t seq)
 		wait_for_field(target);
 		if (g_quit) break;
 		if (now() - tstat > 0.5) { tstat = now(); write_status((ring_shown - ring_base) / fps, starved); }
+		crop_follow();
 		if (g_pause) {                 /* hold: keep the clock pinned to now */
 			target = stat->field_cnt + 1;
 			continue;
@@ -651,7 +695,8 @@ static void present_loop(double fps, uint32_t seq)
  *                 raster's, width in thousandths (default "0,0,0,0,1000")
  *   PLEXFB_CROP_FILE a file naming the crop, "off", "14:9" or "fill" (see
  *                 crop_rect); read at the start and every 0.1 s after, so a
- *                 change shows within a few frames, and at once when paused
+ *                 change shows within a few frames, and at once while the
+ *                 picture stands still (see crop_follow)
  *
  * The gate alone only holds audio back. A stall that keeps the audio from
  * aplay for a while (a late wakeup, a blocked write) would leave every later
@@ -714,36 +759,6 @@ static int skip_bytes(size_t n)
 	return 1;
 }
 
-static void log_picture(const char *what)
-{
-	const struct plane_map *y = &g_geo.p[0];
-	fprintf(stderr, "plexfb: %s %dx%d, aspect %.3f, crop %s %dx%d at %d,%d -> %dx%d at %d,%d "
-	        "(area %d,%d,%d,%d, width %d)%s\n",
-	        what, g_geo.w, g_geo.h, g_geo.aspect, crop_names[g_crop], y->cw, y->ch, y->cx, y->cy,
-	        y->dw, y->dh, y->dx, y->dy, g_screen.l, g_screen.t, g_screen.r, g_screen.b, g_screen.width,
-	        y->groups || y->cw == y->dw ? "" : " (C scaler)");
-}
-
-/* reader thread: follow the crop file. Frames already in the ring keep the
-   crop they were scaled with, a frame or two; while the picture is paused
-   they and the one on screen are scaled again, so the change shows (a field
-   may show it half drawn). */
-static void crop_follow(int vw, int vh, double vaspect)
-{
-	static double next;
-	if (!g_crop_file || now() < next) return;
-	next = now() + 0.1;
-	int c = read_crop(g_crop_file);
-	if (c < 0 || c == g_crop) return;
-	g_crop = c;
-	geometry_setup(&g_geo, vw, vh, vaspect);
-	log_picture("crop changed:");
-	if (!g_pause) return;
-	for (unsigned i = ring_shown == ring_base ? ring_shown : ring_shown - 1; i != ring_filled; i++)
-		scale_frame(&g_geo, ram_slot(i % RING), map + BUF_OFF(i % RING));
-	__sync_synchronize();
-}
-
 static void *avi_reader(void *arg)
 {
 	(void)arg;
@@ -798,9 +813,12 @@ static void *avi_reader(void *arg)
 		if (!memcmp(ch, "00dc", 4)) {
 			if (!ready) {
 				if (!sized && !vaspect) vaspect = 4.0 / 3.0;
+				pthread_mutex_lock(&g_geo_lock);
 				geometry_setup(&g_geo, vw, vh, vaspect);
-				vneed = geometry_frame_bytes(&g_geo);
+				g_geo_ready = 1;
 				log_picture("picture");
+				pthread_mutex_unlock(&g_geo_lock);
+				vneed = geometry_frame_bytes(&g_geo);
 				ready = 1;
 			}
 			if (sz && sz != vneed) {
@@ -808,11 +826,7 @@ static void *avi_reader(void *arg)
 				if (!skip_bytes(padded)) break;
 				continue;
 			}
-			crop_follow(vw, vh, vaspect);
-			while (ring_filled - ring_shown >= RING - 2) {
-				usleep(500);
-				crop_follow(vw, vh, vaspect);   /* paused, or the screen is behind */
-			}
+			while (ring_filled - ring_shown >= RING - 2) usleep(500);
 			uint8_t *dst = ram_slot(ring_filled % RING);
 			if (!sz) {
 				/* an empty chunk is ffmpeg holding the frame over a gap in the
@@ -832,10 +846,12 @@ static void *avi_reader(void *arg)
 				stat_read_ms += (now() - a) * 1e3;
 			}
 			double s = now();
+			pthread_mutex_lock(&g_geo_lock);     /* the crop may change between frames */
 			scale_frame(&g_geo, dst, map + BUF_OFF(ring_filled % RING));
-			stat_scale_ms += (now() - s) * 1e3;
 			__sync_synchronize();
 			ring_filled++;
+			pthread_mutex_unlock(&g_geo_lock);
+			stat_scale_ms += (now() - s) * 1e3;
 		}
 		else if (!memcmp(ch, "01wb", 4)) {
 			size_t n = sz;

@@ -172,19 +172,41 @@ static void set_crop_file(const char *path, const char *text)
 	if (f) { fputs(text, f); fclose(f); }
 }
 
-/* A crop change while paused scales the frames in the ring again from the
-   ones kept in RAM, the one on screen included, and never the slot a
-   previous presenter left up; while playing only the geometry changes. */
-static void crop_follow_paused(void)
+/* which ring slots differ from `before`, as a bit mask */
+static unsigned slots_changed(const uint8_t *before)
+{
+	unsigned mask = 0;
+	for (unsigned i = 0; i < RING; i++)
+		if (memcmp(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES)) mask |= 1u << i;
+	return mask;
+}
+
+/* each ring slot from `from` up to ring_filled holds its RAM frame at the current geometry */
+static int slots_scaled(unsigned from, uint8_t *want)
+{
+	int stale = 0;
+	for (unsigned i = from; i != ring_filled; i++) {
+		scale_frame(&g_geo, ram_slot(i % RING), want);
+		stale += memcmp(want, map + BUF_OFF(i % RING), SLOT_BYTES) != 0;
+	}
+	return stale;
+}
+
+/* A crop change while the picture stands still (paused, or waiting for the
+   decoder) scales the frames in the ring again from the ones kept in RAM,
+   the one on screen included, never the slot a previous presenter left up;
+   while frames flow only the geometry changes. It needs nothing from the
+   reader: the presenter thread follows the file. */
+static void crop_follow_ring(void)
 {
 	static uint8_t mem[0x7E0000];
 	uint8_t *want = malloc(SLOT_BYTES), *before = malloc(SLOT_BYTES * RING);
 	int w = 720, h = 404;
-	double a = 720.0 / 404;
 	map = mem;
 	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
 	g_crop = CROP_OFF;
-	geometry_setup(&g_geo, w, h, a);
+	geometry_setup(&g_geo, w, h, 720.0 / 404);
+	g_geo_ready = 1;
 	memset(map + BUF_OFF(0), 0x5A, SLOT_BYTES);          /* the previous presenter's frame */
 	ring_base = 1; ring_shown = 2; ring_filled = 4;       /* slot 1 on screen, 2 and 3 ahead */
 	for (unsigned i = 1; i < 4; i++) {
@@ -194,31 +216,51 @@ static void crop_follow_paused(void)
 	char path[] = "/tmp/plexfb_crop_XXXXXX";
 	int fd = mkstemp(path);
 	if (fd >= 0) close(fd);
-	set_crop_file(path, "fill\n");
 	g_crop_file = path;
+
+	/* paused */
+	set_crop_file(path, "fill\n");
 	g_pause = 1;
-	crop_follow(w, h, a);
+	crop_follow();
+	int touched = 0;
+	for (size_t i = 0; i < SLOT_BYTES; i++) touched += map[BUF_OFF(0) + i] != 0x5A;
 	CHECK(g_crop == CROP_FILL && g_geo.p[0].cw == 538 && g_geo.p[0].dw == W && g_geo.p[0].dh == H,
 	      "paused: crop %d, %d wide -> %dx%d", g_crop, g_geo.p[0].cw, g_geo.p[0].dw, g_geo.p[0].dh);
-	int stale = 0, touched = 0;
-	for (unsigned i = 1; i < 4; i++) {
-		scale_frame(&g_geo, ram_slot(i), want);
-		stale += memcmp(want, map + BUF_OFF(i), SLOT_BYTES) != 0;
-	}
-	for (size_t i = 0; i < SLOT_BYTES; i++) touched += map[BUF_OFF(0) + i] != 0x5A;
+	int stale = slots_scaled(1, want);
 	CHECK(!stale && !touched, "paused: %d ring frames not scaled again, %d bytes of the old frame touched", stale, touched);
-	/* playing: frames in the ring keep the crop they have */
+
+	/* playing, frames ahead: they keep the crop they have */
 	for (unsigned i = 0; i < RING; i++) memcpy(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES);
 	set_crop_file(path, "14:9\n");
 	g_pause = 0;
 	usleep(120000);                                       /* it looks every 0.1 s */
-	crop_follow(w, h, a);
-	int moved = 0;
-	for (unsigned i = 0; i < RING; i++) moved += memcmp(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES) != 0;
-	CHECK(g_crop == CROP_14_9 && g_geo.p[0].cw == 628 && !moved, "playing: crop %d, %d wide, %d ring frames rewritten",
+	crop_follow();
+	unsigned moved = slots_changed(before);
+	CHECK(g_crop == CROP_14_9 && g_geo.p[0].cw == 628 && !moved, "playing: crop %d, %d wide, ring slots %x rewritten",
 	      g_crop, g_geo.p[0].cw, moved);
+
+	/* playing, the decoder behind (every frame shown, slot 3 on screen, cut
+	   for fill while paused): off shows at once */
+	ring_shown = 4;
+	for (unsigned i = 0; i < RING; i++) memcpy(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES);
+	set_crop_file(path, "off\n");
+	usleep(120000);
+	crop_follow();
+	moved = slots_changed(before);
+	stale = slots_scaled(3, want);
+	CHECK(g_crop == CROP_OFF && moved == 1u << 3 && !stale, "waiting for the decoder: slots %x rewritten, %d stale", moved, stale);
+
+	/* before the reader has read the stream's header the crop is only noted */
+	g_geo_ready = 0;
+	for (unsigned i = 0; i < RING; i++) memcpy(before + i * SLOT_BYTES, map + BUF_OFF(i), SLOT_BYTES);
+	set_crop_file(path, "fill\n");
+	usleep(120000);
+	crop_follow();
+	CHECK(g_crop == CROP_FILL && g_geo.p[0].cw == 720 && !slots_changed(before),
+	      "before the header: crop %d, geometry or ring changed", g_crop);
+
 	unlink(path);
-	g_crop_file = NULL; g_crop = CROP_OFF;
+	g_crop_file = NULL; g_crop = CROP_OFF; g_pause = 0; g_geo_ready = 0;
 	ring_base = ring_shown = ring_filled = 0;
 	map = NULL;
 	free(want); free(before);
@@ -424,7 +466,7 @@ int main(int argc, char **argv)
 
 	crop_cases();
 	crop_words();
-	crop_follow_paused();
+	crop_follow_ring();
 
 	headers();
 	crop();
