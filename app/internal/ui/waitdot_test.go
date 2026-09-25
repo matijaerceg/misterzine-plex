@@ -6,6 +6,7 @@ import (
 
 	"plexcrt/internal/gfx"
 	"plexcrt/internal/input"
+	"plexcrt/internal/plex"
 )
 
 // coreOSD plays the core's part for the dot sprite (rtl/ddr_scanout.v):
@@ -210,7 +211,8 @@ func TestWaitDotComesUpWhenThePictureStalls(t *testing.T) {
 			t.Fatalf("field %d: a dot over a moving picture", f)
 		}
 	})
-	// a seek: the frames stop; nothing for StallDelay, then the dot
+	// the frames stop (the launcher restarting after a network hiccup):
+	// nothing for StallDelay, then the dot
 	stall := now
 	now = tickFields(p, c, now, 60, nil)
 	if !c.waitDotAt() {
@@ -223,6 +225,57 @@ func TestWaitDotComesUpWhenThePictureStalls(t *testing.T) {
 	p.framed(now, c)
 	if c.on || c.vx != 0 {
 		t.Fatalf("the dot outlived the stall: on %v, run %d", c.on, c.vx)
+	}
+}
+
+// playOn publishes a frame every other field for n fields and returns
+// the time after them.
+func playOn(p *Playing, c *coreOSD, now time.Time, n int) time.Time {
+	return tickFields(p, c, now, n, func(f int) {
+		if f%2 == 0 {
+			p.framed(now.Add(time.Duration(f)*16683*time.Microsecond), c)
+		}
+	})
+}
+
+func TestNoWaitDotForASeek(t *testing.T) {
+	p := waitPlaying(t)
+	c := &coreOSD{}
+	now := time.Now()
+	p.framed(now, c)
+	now = playOn(p, c, now, 30)
+	p.seekBy(10) // the old stream runs on for a frame or two, then stops
+	now = playOn(p, c, now, 4)
+	now = tickFields(p, c, now, 120, func(f int) {
+		if c.on {
+			t.Fatalf("a dot %d fields into a seek's wait", f)
+		}
+	})
+	// the new stream: its first frame ends the seek's hush, so a stall
+	// later on (a network hiccup) shows the dot again
+	now = playOn(p, c, now, 30)
+	tickFields(p, c, now, 60, nil)
+	if !c.waitDotAt() {
+		t.Fatal("no dot for a stall after the seek was over")
+	}
+}
+
+func TestWaitDotForATrackChange(t *testing.T) {
+	p := waitPlaying(t)
+	p.item.Audio = []plex.Stream{{ID: "1", Title: "English", Selected: true}, {ID: "2", Title: "Commentary"}}
+	c := &coreOSD{}
+	now := time.Now()
+	p.framed(now, c)
+	now = playOn(p, c, now, 30)
+	p.openList("Audio")
+	p.list.cur = 1
+	p.choose(p.list) // the stream starts over with the new track
+	if p.list != nil {
+		t.Fatal("the list stayed open")
+	}
+	tickFields(p, c, now, 60, nil)
+	if !c.waitDotAt() {
+		t.Fatal("no dot while the new track comes up")
 	}
 }
 

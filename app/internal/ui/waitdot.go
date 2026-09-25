@@ -9,10 +9,10 @@ import (
 )
 
 // The wait dot: while the picture is held up (a playback coming up, or a
-// stream that has stopped delivering frames after a seek, a track change
-// or a restart), the core's dot sprite runs back and forth along a short
-// path in the middle of the screen, at an even speed, until the next
-// frame is on screen. The core moves it every field by itself; the app
+// stream that has stopped delivering frames after a track change or a
+// restart), the core's dot sprite runs back and forth along a short path
+// in the middle of the screen, at an even speed, until the next frame is
+// on screen. A seek's wait has none: the strip already says where it goes. The core moves it every field by itself; the app
 // only turns it round at the ends, so a late wake shows as a moment's
 // rest at the wall, never a stutter.
 const (
@@ -25,6 +25,11 @@ const (
 	// EndSlack is how near the end a stall is the stream finishing, as the
 	// launcher counts it (END_SLACK in plexplay.py).
 	EndSlack = 5
+	// RestartGap is a gap between frames that only a new stream makes: the
+	// frame after it ends a seek's hush. SeekHush ends one that never
+	// restarted, so a later stall is not taken for the seek's.
+	RestartGap = 250 * time.Millisecond
+	SeekHush   = 20 * time.Second
 )
 
 type waitDot struct {
@@ -78,9 +83,9 @@ func (d *waitDot) stop(osd OSD) {
 }
 
 // heldUp reports whether the picture is held up: the start, or no frame
-// for StallDelay while playing. Not once the playback is ending, not over
-// a scrub (the dot is its cursor) or a list, and not in the last seconds,
-// where a stall is the stream finishing.
+// for StallDelay while playing. Not once the playback is ending, not for
+// a seek, not over a scrub (the dot is its cursor) or a list, and not in
+// the last seconds, where a stall is the stream finishing.
 func (p *Playing) heldUp(now time.Time) bool {
 	switch {
 	case p.ending:
@@ -88,6 +93,8 @@ func (p *Playing) heldUp(now time.Time) bool {
 	case p.starting:
 		return true
 	case p.paused || p.frameAt.IsZero() || p.scrub || p.list != nil:
+		return false
+	case !p.hushAt.IsZero() && now.Sub(p.hushAt) < SeekHush:
 		return false
 	case p.dur > 0 && p.pos >= p.dur-EndSlack:
 		return false
@@ -112,9 +119,13 @@ func (p *Playing) waiting(now time.Time, osd OSD, field bool) {
 }
 
 // framed notes a frame published by the presenter: a held picture moves
-// on, and the first one ends the start.
+// on, the first one ends the start, and the first of a new stream ends a
+// seek's hush.
 func (p *Playing) framed(now time.Time, osd OSD) {
-	p.frameAt = now
+	if !p.lastFrame.IsZero() && now.Sub(p.lastFrame) >= RestartGap {
+		p.hushAt = time.Time{}
+	}
+	p.frameAt, p.lastFrame = now, now
 	p.starting = false
 	p.stopWait(osd)
 }

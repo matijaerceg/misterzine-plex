@@ -78,11 +78,13 @@ type Playing struct {
 	restart  bool // the stream must restart for a new track: seek to here
 	// the wait dot (waitdot.go): it runs in the middle while the picture
 	// is held up, from the start until the first frame and on any stall
-	starting bool      // no frame from the presenter yet
-	ending   bool      // stopping: no more dot
-	frameAt  time.Time // when the presenter last published a frame
-	wait     *waitDot  // the dot, while it runs
-	waitSpec string    // PLEXCRT_WAIT_DOT, for tuning on a set
+	starting  bool      // no frame from the presenter yet
+	ending    bool      // stopping: no more dot
+	frameAt   time.Time // the last frame, or now while paused: stalls are timed from it
+	lastFrame time.Time // the last frame the presenter published
+	hushAt    time.Time // a seek was sent: its wait shows no dot, the strip says where it goes
+	wait      *waitDot  // the dot, while it runs
+	waitSpec  string    // PLEXCRT_WAIT_DOT, for tuning on a set
 }
 
 type listMode struct {
@@ -252,6 +254,7 @@ func (p *Playing) seekBy(d float64) {
 	p.seekTo = max(0, min(p.pos+d, p.dur-6))
 	p.pos = p.seekTo
 	p.seekAt = time.Now()
+	p.hushAt = p.seekAt
 	p.send("seek " + ftoa(p.seekTo))
 	p.dirty = true
 }
@@ -260,6 +263,7 @@ func (p *Playing) seekTo_(t float64) {
 	p.seekTo = max(0, min(t, p.dur-6))
 	p.pos = p.seekTo
 	p.seekAt = time.Now()
+	p.hushAt = p.seekAt
 	p.send("seek " + ftoa(p.seekTo))
 	p.dirty = true
 }
@@ -335,8 +339,10 @@ func (p *Playing) choose(l *listMode) {
 	default:
 		p.app.selectStream(p.item, l.kind, l.cur-l.off)
 		p.list = nil
-		// the transcoder starts over with the new track from here
+		// the transcoder starts over with the new track from here; nothing
+		// on screen says so, so its wait shows the dot
 		p.seekTo_(p.pos)
+		p.hushAt = time.Time{}
 	}
 }
 
