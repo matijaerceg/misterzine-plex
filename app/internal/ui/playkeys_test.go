@@ -84,13 +84,14 @@ func TestBackRestsAfterTheSeekStripGoes(t *testing.T) {
 	}
 }
 
-func TestDownClosesTheControls(t *testing.T) {
+func TestDownStepsOutOfTheControls(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		open input.Key
+		name  string
+		open  input.Key
+		downs int // presses to close: the timeline steps to the buttons first
 	}{
-		{"on the buttons", input.Enter},
-		{"on the timeline", input.Up},
+		{"on the buttons", input.Enter, 1},
+		{"on the timeline", input.Up, 2},
 	} {
 		p := waitPlaying(t)
 		c := &coreOSD{}
@@ -100,8 +101,14 @@ func TestDownClosesTheControls(t *testing.T) {
 		if !p.visible {
 			t.Fatalf("%s: the controls did not open", tc.name)
 		}
-		if keyAt(p, c, input.Down, now.Add(100*time.Millisecond)) {
-			t.Fatalf("%s: Down stopped the playback", tc.name)
+		for i := 1; i <= tc.downs; i++ {
+			now = now.Add(100 * time.Millisecond)
+			if keyAt(p, c, input.Down, now) {
+				t.Fatalf("%s: Down stopped the playback", tc.name)
+			}
+			if i < tc.downs && (!p.visible || p.scrub) {
+				t.Fatalf("%s: Down %d should have moved to the buttons (visible %v, scrub %v)", tc.name, i, p.visible, p.scrub)
+			}
 		}
 		if p.visible || p.scrub || p.armed {
 			t.Fatalf("%s: Down left the controls up (visible %v, scrub %v)", tc.name, p.visible, p.scrub)
@@ -109,6 +116,34 @@ func TestDownClosesTheControls(t *testing.T) {
 		// hidden, Down does nothing
 		if keyAt(p, c, input.Down, now.Add(3*time.Second)) || p.visible {
 			t.Fatalf("%s: Down with the controls closed did something", tc.name)
+		}
+	}
+}
+
+func TestDownFromTheTimelineKeepsTheScrubAndBackDropsIt(t *testing.T) {
+	for _, tc := range []struct {
+		key  input.Key
+		want []string
+	}{
+		{input.Down, []string{"seek 610"}},
+		{input.Back, nil},
+	} {
+		p := waitPlaying(t)
+		var sent []string
+		p.send = func(s string) { sent = append(sent, s) }
+		c := &coreOSD{}
+		now := time.Now()
+		p.framed(now, c)
+		keyAt(p, c, input.Up, now) // the timeline, at 600 s
+		keyAt(p, c, input.Right, now.Add(100*time.Millisecond))
+		p.Key(input.Event{Key: input.Right, Release: true}, now.Add(150*time.Millisecond)) // a tap: 610, in its grace
+		keyAt(p, c, tc.key, now.Add(250*time.Millisecond))
+		if !p.visible || p.scrub {
+			t.Fatalf("%v from the timeline: visible %v, scrub %v; want the buttons", tc.key, p.visible, p.scrub)
+		}
+		tickFields(p, c, now.Add(300*time.Millisecond), 60, nil) // well past the grace
+		if len(sent) != len(tc.want) || len(sent) == 1 && sent[0] != tc.want[0] {
+			t.Fatalf("%v from the timeline in a scrub's grace sent %q, want %q", tc.key, sent, tc.want)
 		}
 	}
 }

@@ -13,9 +13,10 @@ import (
 )
 
 // Playing drives the overlay while a video plays: OK opens it, Up opens
-// it on the timeline, Down closes it, Back steps out of it a level at a
-// time and stops once it is closed (not within BackGrace of anything on
-// screen going away), left and right seek ten seconds with
+// it on the timeline, Down and Back step out of it a level at a time (the
+// timeline, then the buttons; Down keeps a scrub, Back drops it), Back
+// stops once it is closed (not within BackGrace of anything on screen
+// going away), left and right seek ten seconds with
 // it closed (a slim peek of the bar and the times shows the jump) and move
 // along its buttons with it open. It hides itself after a few seconds
 // unless paused. Audio and Subtitles
@@ -447,12 +448,19 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			}
 		case input.Down:
 			if !ev.Repeat {
-				p.hidePanel()
-				return false
+				// down to the buttons, with the scrub: one still in its grace
+				// (or its hold) goes now, as it would have in a moment
+				if p.armed || p.running(now) {
+					if (p.running(now) || p.settle) && p.app.osd != nil {
+						p.scrubTo = p.fromX(p.app.osd.DotX())
+					}
+					p.seekTo_(p.scrubTo)
+				}
+				p.scrub, p.armed, p.held = false, false, 0
 			}
 		case input.Back:
 			if !ev.Repeat {
-				p.scrub = false
+				p.scrub = false // back to the buttons, dropping an unsent scrub
 				p.armed = false
 			}
 		case input.Up:
@@ -477,7 +485,8 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 		p.dirty = true
 	case input.Down:
 		if !ev.Repeat && p.visible {
-			p.hidePanel()
+			p.visible = false // off the buttons row: the opposite of Up bringing it
+			p.dirty = true
 		}
 	case input.Enter:
 		if ev.Repeat {
@@ -580,14 +589,6 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 		return true
 	}
 	return false
-}
-
-// hidePanel takes the controls down, the way Up brought them: an unsent
-// scrub goes with them, as with Back.
-func (p *Playing) hidePanel() {
-	p.visible = false
-	p.scrub, p.held, p.armed = false, 0, false
-	p.dirty = true
 }
 
 // Tick refreshes the position and redraws the overlay when needed. It
