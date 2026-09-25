@@ -617,6 +617,7 @@ class UpdateTests(unittest.TestCase):
         def fresh(ident):
             _, _, package = self.release(ident)
             (package / 'menu_launcher.py').write_text("SELECTIONS = ('MisterZine Plex Core',)\n")
+            (package / 'manager.py').write_text('def zaparoo_entry(): pass\n')
             return package
         entry = self.card / 'zaparoo/launchers' / manager.ZAPAROO_ENTRY
         with patch.object(manager, 'reload_zaparoo', lambda card: reloads.append(card)):
@@ -638,6 +639,22 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(len(reloads), count + 2)
             self.assertTrue((self.card / 'zaparoo').is_dir())   # Zaparoo's own folders stay
 
+    def test_rollback_to_a_manager_without_zaparoo_support_removes_the_entry(self):
+        (self.card / 'zaparoo').mkdir()
+        entry = self.card / 'zaparoo/launchers' / manager.ZAPAROO_ENTRY
+        watcher = "SELECTIONS = ('MisterZine Plex Core',)\n"
+        _, _, old = self.release('old', helpers={'menu_launcher.py': watcher})
+        _, _, new = self.release('new', helpers={'menu_launcher.py': watcher, 'manager.py': 'def zaparoo_entry(): pass\n'})
+        with patch.object(manager, 'reload_zaparoo', lambda card: None):
+            manager.install(self.card, old)
+            self.assertFalse(entry.exists())
+            manager.install(self.card, new)
+            self.assertTrue(entry.exists())
+            manager.rollback(self.root)
+        # The restored manager would not remove it on uninstall, so it goes now.
+        self.assertFalse(entry.exists())
+        self.assertTrue((self.card / 'MisterZine Plex Core.mgl').exists())
+
     def test_pending_recovery_keeps_every_release(self):
         for ident in ('one', 'two', 'three'):
             _, _, package = self.release(ident)
@@ -651,7 +668,8 @@ class UpdateTests(unittest.TestCase):
     def test_failed_first_install_leaves_no_zaparoo_entry(self):
         (self.card / 'zaparoo').mkdir()
         entry = self.card / 'zaparoo/launchers' / manager.ZAPAROO_ENTRY
-        release, archive, _ = self.release('first', 'beta', {'menu_launcher.py': "SELECTIONS = ()\n"})
+        release, archive, _ = self.release('first', 'beta', {'menu_launcher.py': "SELECTIONS = ()\n",
+                                                              'manager.py': 'def zaparoo_entry(): pass\n'})
         service.prepare(self.card, release, self.deliver(archive))
         seen = []
         def launch(root):

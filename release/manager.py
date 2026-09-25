@@ -85,6 +85,16 @@ def reload_zaparoo(card):
         pass
 
 
+def maintains_zaparoo(root):
+    """True when the installed manager keeps the Zaparoo entry up to date and
+    removes it on uninstall. After a rollback to a release from before that,
+    the restored manager would leave a stale entry behind."""
+    try:
+        return b'def zaparoo_entry(' in (root / 'manager.py').read_bytes()
+    except OSError:
+        return False
+
+
 def zaparoo_entry(card, enable=True, folder=None, reload=None):
     """List Plex under Other in Zaparoo, pointing at the selected release.
 
@@ -102,7 +112,8 @@ def zaparoo_entry(card, enable=True, folder=None, reload=None):
     for place in (zaparoo, launchers, path):
         if place.is_symlink():
             return
-    if not enable or legacy_watcher(root) or not (root / 'active.json').is_file() and folder is None:
+    if (not enable or legacy_watcher(root) or not maintains_zaparoo(root)
+            or not (root / 'active.json').is_file() and folder is None):
         if path.is_file():
             path.unlink()
             reload(card)
