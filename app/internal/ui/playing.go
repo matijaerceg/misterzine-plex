@@ -12,11 +12,13 @@ import (
 	"plexcrt/internal/ring"
 )
 
-// Playing drives the overlay while a video plays: OK opens it, Back
-// closes it (and stops when it is closed), left and right seek ten
-// seconds with it closed (a slim peek of the bar and the times shows the
-// jump) and move along its buttons with it open. It hides itself after a
-// few seconds unless paused. Audio and Subtitles
+// Playing drives the overlay while a video plays: OK opens it, Up opens
+// it on the timeline, Down closes it, Back steps out of it a level at a
+// time and stops once it is closed (not within BackGrace of anything on
+// screen going away), left and right seek ten seconds with
+// it closed (a slim peek of the bar and the times shows the jump) and move
+// along its buttons with it open. It hides itself after a few seconds
+// unless paused. Audio and Subtitles
 // open a list in the overlay; a skip button appears over an intro or
 // credits marker; at the end a countdown runs on to the next episode.
 type Playing struct {
@@ -27,6 +29,7 @@ type Playing struct {
 	send      func(string)
 	visible   bool
 	shownAt   time.Time
+	closedAt  time.Time     // when the overlay last left the screen: Back rests for BackGrace
 	peekAt    time.Time     // a closed-overlay seek: the bar and times peek until OsdFlash
 	peekH     int           // the peek's height, from the last compose
 	peekFor   time.Duration // how long the peek stays after peekAt; 0 means OsdFlash
@@ -161,6 +164,7 @@ const (
 	OsdH      = 480 - OsdY
 	OsdAlpha  = 200
 	OsdHide   = 4 * time.Second
+	BackGrace = time.Second             // after the overlay goes, Back does not stop the playback
 	OsdFlash  = 2 * time.Second         // how long a closed-overlay seek shows the bar
 	OsdLinger = 3500 * time.Millisecond // how long the start strip stays over the picture
 	OsdBtnGap = 30
@@ -441,7 +445,12 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 				p.armed = false
 				p.seekTo_(p.scrubTo)
 			}
-		case input.Down, input.Back:
+		case input.Down:
+			if !ev.Repeat {
+				p.hidePanel()
+				return false
+			}
+		case input.Back:
 			if !ev.Repeat {
 				p.scrub = false
 				p.armed = false
@@ -466,6 +475,10 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 		p.held = 0
 		p.shownAt = now
 		p.dirty = true
+	case input.Down:
+		if !ev.Repeat && p.visible {
+			p.hidePanel()
+		}
 	case input.Enter:
 		if ev.Repeat {
 			return false
@@ -561,9 +574,20 @@ func (p *Playing) Key(ev input.Event, now time.Time) bool {
 			p.dirty = true
 			return false
 		}
+		if now.Sub(p.closedAt) < BackGrace {
+			return false // meant for what just went away, not for the film
+		}
 		return true
 	}
 	return false
+}
+
+// hidePanel takes the controls down, the way Up brought them: an unsent
+// scrub goes with them, as with Back.
+func (p *Playing) hidePanel() {
+	p.visible = false
+	p.scrub, p.held, p.armed = false, 0, false
+	p.dirty = true
 }
 
 // Tick refreshes the position and redraws the overlay when needed. It
@@ -633,6 +657,9 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	skipBtn := p.skip != nil && !p.skipOff && now.Sub(p.skipAt) < SkipHold && !p.visible && !peek
 	if !p.visible && !skipBtn && !peek {
 		if p.dirty {
+			if p.last != "" {
+				p.closedAt = now // something just left the screen: Back rests for BackGrace
+			}
 			p.painter.hide(osd)
 			if dotFree {
 				osd.Dot(0, 0, 0, false)
