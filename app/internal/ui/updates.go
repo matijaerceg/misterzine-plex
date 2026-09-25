@@ -14,7 +14,7 @@ import (
 type updateState struct {
 	catalogue  updates.Catalogue
 	checking   bool
-	lastCheck  time.Time
+	nextCheck  time.Time // of the automatic check
 	nextStatus time.Time
 	reading    bool
 	status     updates.Status
@@ -26,11 +26,11 @@ func (a *App) checkUpdates(manual bool, now time.Time) {
 	if a.Cfg == nil || a.betaDir() == "" || a.updates.checking {
 		return
 	}
-	if !manual && !a.updates.lastCheck.IsZero() && now.Sub(a.updates.lastCheck) < 6*time.Hour {
+	if !manual && now.Before(a.updates.nextCheck) {
 		return
 	}
 	a.updates.checking = true
-	a.updates.lastCheck = now
+	a.updates.nextCheck = now.Add(6 * time.Hour)
 	if manual {
 		a.updates.message = "Checking for updates..."
 	}
@@ -54,6 +54,9 @@ func (a *App) checkUpdates(manual bool, now time.Time) {
 		a.Later(func() {
 			a.updates.checking = false
 			if err != nil {
+				// a failure is no check: the first one usually runs before
+				// the MiSTer has its network or its clock
+				a.updates.nextCheck = time.Now().Add(5 * time.Minute)
 				if cacheErr == nil && a.updates.catalogue.Releases == nil {
 					a.updates.catalogue = cached
 				}

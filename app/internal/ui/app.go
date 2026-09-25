@@ -546,6 +546,14 @@ func (a *App) loadSections() {
 	}
 }
 
+// knownSections takes the libraries from a Home fetch while the list is
+// missing, as it is when the server could not be reached at start.
+func (a *App) knownSections(secs []plex.Section) {
+	if len(a.secs) == 0 && len(secs) > 0 {
+		a.secs = secs
+	}
+}
+
 // Menu opens the drawer over the home screen: Home, the libraries, Options.
 func (a *App) Menu() {
 	if a.Plex == nil {

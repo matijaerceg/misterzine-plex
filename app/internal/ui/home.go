@@ -74,6 +74,10 @@ type Home struct {
 	rowY          Anim      // incoming row slides toward its resting position
 	colX          []Anim    // per strip horizontal scroll in pixels
 	err           error
+	problem       netProblem // why err happened, in the user's terms
+	connecting    bool       // err is being retried quietly: "Connecting..." instead
+	graceUntil    time.Time  // until then no answer at all is retried quietly
+	failedSince   time.Time  // start of the current run of failures
 	empty         bool
 	holes         []gfx.Rect // areas painted this frame, skipped by the page copy
 
@@ -88,9 +92,10 @@ type Home struct {
 	animating      bool // last draw; used to schedule home frames on vsync
 }
 
-// NewHome loads the initial rows synchronously.
+// NewHome loads the initial rows synchronously. A server that cannot be
+// reached yet is retried in the background (see ConnectGrace).
 func NewHome(app *App) *Home {
-	h := &Home{app: app, home: true}
+	h := &Home{app: app, home: true, graceUntil: time.Now().Add(ConnectGrace)}
 	h.reload()
 	return h
 }
@@ -113,35 +118,66 @@ func (h *Home) focusSeason(i int) {
 // recently added, fetched together.
 func (h *Home) reload() {
 	h.refreshResult = nil // discard any older background request
-	hubs, err := fetchHome(h.app.Plex, h.app.Log)
+	hubs, secs, err := fetchHome(h.app.Plex, h.app.Log)
 	if err == nil {
 		h.app.measureHubs(hubs)
 	}
-	h.load(hubs, err)
+	h.load(homeResult{hubs, secs, err}, time.Now())
 }
 
 // load installs a fetch result and schedules the next background refresh.
-func (h *Home) load(hubs []*plex.Hub, err error) {
-	h.refreshAt = time.Now().Add(30 * time.Second)
-	h.err = err
-	if err != nil {
-		h.app.Log.Printf("home: %v", err)
-		h.setHubs(nil)
+func (h *Home) load(r homeResult, now time.Time) {
+	if r.err != nil {
+		h.fail(r.err, now)
 		return
 	}
-	h.applyHome(hubs)
+	h.refreshAt = now.Add(30 * time.Second)
+	h.connected(now)
+	h.app.knownSections(r.secs)
+	h.applyHome(r.hubs)
+}
+
+// fail shows that the server gave no rows: quietly retried while nothing
+// answers within the grace period, otherwise as an error retried every 30 s.
+func (h *Home) fail(err error, now time.Time) {
+	problem := classify(err, now)
+	connecting := unreachable(err) && now.Before(h.graceUntil)
+	// once per cause, not once per retry
+	if h.err == nil || problem != h.problem || connecting != h.connecting {
+		h.app.Log.Printf("home: %v", err)
+	}
+	if h.err == nil {
+		h.failedSince = now
+	}
+	h.err, h.problem, h.connecting = err, problem, connecting
+	if connecting {
+		h.refreshAt = now.Add(ConnectRetry)
+	} else {
+		h.refreshAt = now.Add(30 * time.Second)
+	}
+	h.setHubs(nil)
+}
+
+// connected ends a run of failures.
+func (h *Home) connected(now time.Time) {
+	if h.err != nil {
+		h.app.Log.Printf("home: connected after %.0f s", now.Sub(h.failedSince).Seconds())
+	}
+	h.err, h.connecting = nil, false
 }
 
 type homeResult struct {
 	hubs []*plex.Hub
+	secs []plex.Section
 	err  error
 }
 
 // fetchHome owns its data; the worker never reads or changes screen state.
 // A row that fails is dropped and logged rather than failing the screen:
 // a large library answers /hubs slowly, and one broken library must not
-// hide the others. Only a server that answers nothing is an error.
-func fetchHome(client *plex.Client, lg *log.Logger) ([]*plex.Hub, error) {
+// hide the others. Only a server that answers nothing is an error. The
+// libraries come back too, for the menu and the rows' "See all" tiles.
+func fetchHome(client *plex.Client, lg *log.Logger) ([]*plex.Hub, []plex.Section, error) {
 	var hubs []*plex.Hub
 	var hubsErr error
 	var wg sync.WaitGroup
@@ -153,7 +189,7 @@ func fetchHome(client *plex.Client, lg *log.Logger) ([]*plex.Hub, error) {
 	secs, err := client.Sections()
 	if err != nil {
 		wg.Wait()
-		return nil, err
+		return nil, nil, err
 	}
 	rows := make([]*plex.Hub, len(secs))
 	errs := make([]error, len(secs))
@@ -189,14 +225,14 @@ func fetchHome(client *plex.Client, lg *log.Logger) ([]*plex.Hub, error) {
 		}
 	}
 	if hubsErr != nil && len(secs) > 0 && failed == len(secs) {
-		return nil, errs[0]
+		return nil, nil, errs[0]
 	}
 	for _, r := range rows {
 		if r != nil {
 			hubs = append(hubs, r)
 		}
 	}
-	return hubs, nil
+	return hubs, secs, nil
 }
 
 // shortErr is the error on one screen line: for a request, the path and
@@ -226,16 +262,14 @@ func (h *Home) pollHome(now time.Time) {
 		select {
 		case result := <-h.refreshResult:
 			h.refreshResult = nil
-			h.refreshAt = now.Add(30 * time.Second)
 			h.updating = false
 			h.app.dirty = true
-			if result.err != nil {
+			if result.err != nil && h.err == nil {
+				h.refreshAt = now.Add(30 * time.Second)
 				h.app.Log.Printf("home refresh: %v", result.err)
 				return // keep the last usable rows during a network outage
 			}
-			h.err = nil
-			h.applyHome(result.hubs)
-			h.app.dirty = true
+			h.load(result, now)
 		default:
 		}
 		return
@@ -247,11 +281,11 @@ func (h *Home) pollHome(now time.Time) {
 	h.refreshResult = result
 	client, lg := h.app.Plex, h.app.Log
 	go func() {
-		hubs, err := fetchHome(client, lg)
+		hubs, secs, err := fetchHome(client, lg)
 		if err == nil {
 			h.app.measureHubs(hubs)
 		}
-		result <- homeResult{hubs, err}
+		result <- homeResult{hubs, secs, err}
 		select {
 		case h.app.Wake <- struct{}{}:
 		default:
@@ -345,8 +379,11 @@ func (h *Home) Focused() *plex.Item {
 // Key handles one input event.
 func (h *Home) Key(ev input.Event, now time.Time) {
 	if len(h.hubs) == 0 {
-		if ev.Key == input.Enter && h.home {
-			h.reload()
+		if ev.Key == input.Enter && h.home && !ev.Release && !ev.Repeat {
+			// in the background, so a server that does not answer cannot
+			// hold up the screen; an error shows Connecting... meanwhile
+			h.connecting = h.err != nil
+			h.refreshAt = time.Time{}
 		}
 		return
 	}
@@ -446,8 +483,18 @@ func (h *Home) Refresh(it *plex.Item) {
 func (h *Home) Draw(c *gfx.Canvas, now time.Time) bool {
 	if h.err != nil {
 		c.Fill(0, 0, c.W, c.H, gfx.Bg)
-		h.app.text(c, SafeX, SafeY+40, h.app.F.Body, gfx.GreyHi, "Cannot reach the server.")
-		h.app.text(c, SafeX, SafeY+70, h.app.F.Small, gfx.GreyLo, "Check the network and confirm your Plex server is running.")
+		if h.connecting {
+			server := "your Plex server"
+			if h.app.Cfg != nil && h.app.Cfg.ServerName != "" {
+				server = h.app.Cfg.ServerName
+			}
+			h.app.text(c, SafeX, SafeY+40, h.app.F.Body, gfx.GreyHi, h.app.F.Body.Fit("Connecting to "+server+"...", SafeW))
+			h.app.text(c, SafeX, SafeY+70, h.app.F.Small, gfx.GreyLo, h.problem.waiting())
+			return false
+		}
+		headline, advice := h.problem.failure()
+		h.app.text(c, SafeX, SafeY+40, h.app.F.Body, gfx.GreyHi, headline)
+		h.app.text(c, SafeX, SafeY+70, h.app.F.Small, gfx.GreyLo, advice)
 		h.app.text(c, SafeX, SafeY+110, h.app.F.Small, gfx.GreyLo, "OK: retry. Back: menu, then Options to choose a server.")
 		h.app.text(c, SafeX, SafeY+160, h.app.F.Small, gfx.GreyLo, shortErr(h.err))
 		return false

@@ -33,6 +33,15 @@ Detailed behavior and display settings. For everyday help, see the
   the menu.
 - To leave the app, open MiSTer's OSD and return to the MiSTer Menu core.
 
+### Connecting after power-on
+
+Opened right after the MiSTer is switched on, Plex can start before the
+network is up. On a MiSTer without a clock chip it can also start before the
+clock has been set from the internet, and secure connections to the server
+fail until then. For its first minute Plex keeps trying every two seconds and
+shows **Connecting** with what it is waiting for. After that it shows the error
+and tries again every 30 seconds; OK tries at once.
+
 ### Sound and playback quality
 
 Theme music and navigation taps can be disabled in Options. **Video bitrate**
@@ -61,7 +70,8 @@ from the next playback.
 
 Open **Options > Updates** for available versions, release notes and download
 sizes. Checks run in the background at startup and every six hours while browsing.
-Failed background checks stay quiet. Manual checks show errors; previously fetched
+Failed background checks stay quiet and are tried again after five minutes.
+Manual checks show errors; previously fetched
 release information remains available offline.
 
 Public builds notify about newer public releases. Early-access notifications are

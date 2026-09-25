@@ -49,8 +49,22 @@ func (l *Login) newCode() {
 	l.stat = "Getting a code..."
 	l.mu.Unlock()
 	id := l.app.Cfg.ClientID
+	grace := l.at.Add(ConnectGrace)
 	go func() {
 		pin, err := plex.NewPin(id)
+		// no answer soon after start is retried quietly (see ConnectGrace)
+		for err != nil && unreachable(err) && time.Now().Before(grace) {
+			l.mu.Lock()
+			if l.gen != gen {
+				l.mu.Unlock()
+				return
+			}
+			l.stat = classify(err, time.Now()).waiting()
+			l.mu.Unlock()
+			l.wake()
+			time.Sleep(ConnectRetry)
+			pin, err = plex.NewPin(id)
+		}
 		l.mu.Lock()
 		if l.gen != gen {
 			l.mu.Unlock()
@@ -58,6 +72,10 @@ func (l *Login) newCode() {
 		}
 		if err != nil {
 			l.err = "Cannot reach plex.tv: " + err.Error()
+			if p := classify(err, time.Now()); p != problemServer && unreachable(err) {
+				headline, _ := p.failure()
+				l.err = headline + " " + l.err
+			}
 			l.stat = ""
 			l.mu.Unlock()
 			l.wake()
