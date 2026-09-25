@@ -35,6 +35,7 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 	r.plantCanaries()
 	logf("watch: ring at physical 0x%x (%s); memory also mapped by: %s", phys, source,
 		listOrNone(mappers("/proc", phys, mapSize, os.Getpid())))
+	logf("watch: %s", consoleMode(false))
 	var lostHeader, foreign, black, gap, detailed int
 	var scanned bool
 	var lastSeq uint32
@@ -85,6 +86,13 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 				scanned = true
 				logf("watch: at that moment the ring's memory was mapped by: %s",
 					listOrNone(mappers("/proc", phys, mapSize, os.Getpid())))
+			}
+		}
+		if n%20 == 0 {
+			// The console draws its cursor over the ring's header when it is
+			// in text mode; something switched it back mid-run.
+			if text := consoleMode(true); strings.HasPrefix(text, "console was in text") {
+				logf("watch: %s", text)
 			}
 		}
 		if n%10 == 0 {

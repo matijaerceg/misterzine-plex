@@ -58,7 +58,7 @@ func (r *Ring) canaryState() (hit int, zeroed bool, first uint32) {
 func describeCanaries(hit int, zeroed bool, first uint32) string {
 	switch {
 	case hit == 0:
-		return "intact (the write was aimed at the header)"
+		return "intact (a small write near the header, such as the console cursor)"
 	case zeroed:
 		return fmt.Sprintf("zeroed, %d of %d (a clear of the framebuffer)", hit, len(canaryOffs))
 	default:
@@ -72,18 +72,22 @@ func (r *Ring) headerWords() string {
 		atomic.LoadUint32(&r.hdr[2]), atomic.LoadUint32(&r.hdr[3]))
 }
 
+// mainFB is MiSTer main's first framebuffer bank (FB_ADDR + 4096), where the
+// driver puts /dev/fb0.
+const mainFB = 0x22001000
+
 // ringPhys is the physical address of the ring: the framebuffer's start as
-// the driver reports it, else the address the presenter maps.
+// the driver reports it, else MiSTer main's framebuffer address.
 func ringPhys() (phys uint64, fromDriver bool) {
 	f, err := os.Open("/dev/fb0")
 	if err != nil {
-		return 0x30000000, false
+		return mainFB, false
 	}
 	defer f.Close()
 	var fix [128]byte // struct fb_fix_screeninfo
 	const fbiogetFscreeninfo = 0x4602
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbiogetFscreeninfo, uintptr(unsafe.Pointer(&fix[0]))); e != 0 {
-		return 0x30000000, false
+		return mainFB, false
 	}
 	// id[16], then unsigned long smem_start
 	if unsafe.Sizeof(uintptr(0)) == 8 {
@@ -161,6 +165,36 @@ func mappers(proc string, phys, size uint64, self int) []string {
 		out = append(out, fmt.Sprintf("%s(%d) %s", strings.TrimSpace(string(comm)), pid, strings.Join(kinds, "+")))
 	}
 	return out
+}
+
+// consoleMode reports whether the Linux console is in text mode, where the
+// kernel draws it (and its cursor) into the framebuffer the ring lives in.
+// With fix, a console found in text mode is put into graphics mode.
+func consoleMode(fix bool) string {
+	const kdsetmode, kdgetmode, kdGraphics = 0x4B3A, 0x4B3B, 1
+	vt := "?"
+	if b, err := os.ReadFile("/sys/class/tty/tty0/active"); err == nil {
+		vt = strings.TrimSpace(string(b))
+	}
+	f, err := os.OpenFile("/dev/tty0", os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return "console " + vt + " mode unknown"
+	}
+	defer f.Close()
+	var mode int32
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), kdgetmode, uintptr(unsafe.Pointer(&mode))); e != 0 {
+		return "console " + vt + " mode unknown"
+	}
+	if mode == kdGraphics {
+		return "console " + vt + " in graphics mode"
+	}
+	if !fix {
+		return "console " + vt + " in text mode: its cursor draws over the picture"
+	}
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), kdsetmode, kdGraphics); e != 0 {
+		return "console was in text mode; could not switch it to graphics"
+	}
+	return "console was in text mode; switched to graphics so it stops drawing over the picture"
 }
 
 func listOrNone(names []string) string {

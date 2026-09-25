@@ -427,6 +427,28 @@ class UpdateTests(unittest.TestCase):
         self.assertIn('== SYSTEM', report)
         self.assertNotIn('example.org', report)
 
+    def test_console_leaves_the_framebuffer_while_the_app_runs(self):
+        tty = self.card / 'tty'
+        tty.write_text('')
+        calls = []
+        def ioctl(fd, request, arg):
+            calls.append((request, arg if isinstance(arg, int) else None))
+            if request == manager.KDGETMODE:
+                arg[0] = mode
+        mode = manager.KD_TEXT
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            console = manager.GraphicsConsole(str(tty), ioctl)
+            console.release()
+            console.release()
+        self.assertEqual(calls, [(manager.KDGETMODE, None), (manager.KDSETMODE, manager.KD_GRAPHICS),
+                                 (manager.KDSETMODE, manager.KD_TEXT)])
+        self.assertIn('text mode', out.getvalue())
+        calls.clear()
+        mode = manager.KD_GRAPHICS
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager.GraphicsConsole(str(tty), ioctl).release()
+        self.assertEqual(calls, [(manager.KDGETMODE, None)])
+
     def test_framebuffer_holders_exclude_main_and_ourselves(self):
         proc = self.card / 'proc'
         for pid, name, target in ((40, 'frontend', '/dev/fb0'), (41, 'MiSTer_Zaparoo', '/dev/fb0'),

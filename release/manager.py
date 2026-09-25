@@ -745,6 +745,56 @@ class PausedHolders:
         self.paused = []
 
 
+KDSETMODE, KDGETMODE, KD_TEXT, KD_GRAPHICS = 0x4B3A, 0x4B3B, 0, 1
+
+
+class GraphicsConsole:
+    """Keep the Linux console out of the framebuffer while the app runs.
+
+    The ring lives in the framebuffer the console draws into. Zaparoo's MiSTer
+    main forces fb_terminal on and, when its frontend exits, leaves the console
+    in text mode with the cursor shown; the kernel then blinks that cursor over
+    the ring's header at the top-left, several times a second, and every blink
+    blanks the picture. Graphics mode, which MiSTer main normally keeps, stops
+    the console drawing. The mode found at launch is put back afterwards."""
+    def __init__(self, tty='/dev/tty0', ioctl=None):
+        import fcntl
+        self.ioctl = ioctl or fcntl.ioctl
+        self.tty, self.restore = tty, None
+        try:
+            fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
+        except OSError as exc:
+            trace('console mode unknown (%s)' % exc.__class__.__name__)
+            return
+        try:
+            mode = bytearray(4)
+            self.ioctl(fd, KDGETMODE, mode)
+            if mode[0] == KD_TEXT:
+                self.ioctl(fd, KDSETMODE, KD_GRAPHICS)
+                self.restore = KD_TEXT
+                trace('console was in text mode and would draw over the picture; graphics mode while Plex runs')
+            else:
+                trace('console in graphics mode')
+        except OSError as exc:
+            trace('console mode unknown (%s)' % exc.__class__.__name__)
+        finally:
+            os.close(fd)
+
+    def release(self):
+        if self.restore is None:
+            return
+        try:
+            fd = os.open(self.tty, os.O_RDWR | os.O_NOCTTY)
+            try:
+                self.ioctl(fd, KDSETMODE, self.restore)
+            finally:
+                os.close(fd)
+            trace('console returned to text mode')
+        except OSError:
+            pass
+        self.restore = None
+
+
 def fb_mode(parameters=Path('/sys/module/MiSTer_fb/parameters')):
     try:
         return (parameters / 'mode').read_text().strip()
@@ -806,6 +856,7 @@ def run(root):
         changed = time.monotonic()
         rotate_log('/tmp/misterzine-plex.log')
         holders = PausedHolders(fb_holders())
+        console = GraphicsConsole()
         with open('/tmp/misterzine-plex.log', 'wb') as log:
             child = subprocess.Popen(args, stdout=log, stderr=log)
             trace('app started, pid %d' % child.pid)
@@ -833,6 +884,7 @@ def run(root):
                 stop_child(child)
                 cleanup_player(folder)
                 holders.resume()
+                console.release()
 
 
 def main():
