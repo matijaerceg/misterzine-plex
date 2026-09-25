@@ -374,6 +374,10 @@ def system_facts(root, secrets, proc_root=Path('/proc')):
     except OSError:
         pass
     try:
+        facts['fb0_holders'] = sorted('%s %d' % (name, pid) for pid, name in fb_holders(proc_root))
+    except OSError:
+        pass
+    try:
         startup = (card / 'linux/user-startup.sh').read_text(errors='replace')
         facts['startup_hooks'] = sorted({word for word in ('misterzine-plex', 'zaparoo', 'tapto', 'remote.sh')
                                          if word in startup})
@@ -693,6 +697,54 @@ def trace(message):
     print(time.strftime('%H:%M:%S') + ' launch: ' + message, flush=True)
 
 
+def fb_holders(proc_root=Path('/proc'), exclude=()):
+    """Other processes with /dev/fb0 open: (pid, name). The frame ring lives in
+    that memory, so anything else drawing there lands on the picture. MiSTer
+    main itself is left out; it owns the device."""
+    found = []
+    for proc in proc_root.iterdir():
+        if not proc.name.isdigit() or int(proc.name) in exclude or int(proc.name) == os.getpid():
+            continue
+        try:
+            name = (proc / 'comm').read_bytes().decode('utf-8', errors='replace').strip()
+            if name.startswith('MiSTer'):
+                continue
+            for fd in (proc / 'fd').iterdir():
+                try:
+                    if os.readlink(fd) == '/dev/fb0':
+                        found.append((int(proc.name), name))
+                        break
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return found
+
+
+class PausedHolders:
+    """Stop other framebuffer users for the app's lifetime and let them go
+    after. A Zaparoo Frontend left running beside the core kept painting its
+    screen over the ring, which showed as a picture flashing to black."""
+    def __init__(self, holders):
+        self.paused = []
+        for pid, name in holders:
+            try:
+                os.kill(pid, signal.SIGSTOP)
+                self.paused.append((pid, name))
+                trace('paused %s (pid %d): it holds /dev/fb0 and would draw over the picture' % (name, pid))
+            except OSError:
+                pass
+
+    def resume(self):
+        for pid, name in self.paused:
+            try:
+                os.kill(pid, signal.SIGCONT)
+                trace('resumed %s (pid %d)' % (name, pid))
+            except OSError:
+                pass
+        self.paused = []
+
+
 def fb_mode(parameters=Path('/sys/module/MiSTer_fb/parameters')):
     try:
         return (parameters / 'mode').read_text().strip()
@@ -753,6 +805,7 @@ def run(root):
             trace('framebuffer mode written, now %s' % fb_mode())
         changed = time.monotonic()
         rotate_log('/tmp/misterzine-plex.log')
+        holders = PausedHolders(fb_holders())
         with open('/tmp/misterzine-plex.log', 'wb') as log:
             child = subprocess.Popen(args, stdout=log, stderr=log)
             trace('app started, pid %d' % child.pid)
@@ -779,6 +832,7 @@ def run(root):
             finally:
                 stop_child(child)
                 cleanup_player(folder)
+                holders.resume()
 
 
 def main():

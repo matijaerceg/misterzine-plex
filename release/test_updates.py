@@ -427,6 +427,16 @@ class UpdateTests(unittest.TestCase):
         self.assertIn('== SYSTEM', report)
         self.assertNotIn('example.org', report)
 
+    def test_framebuffer_holders_exclude_main_and_ourselves(self):
+        proc = self.card / 'proc'
+        for pid, name, target in ((40, 'frontend', '/dev/fb0'), (41, 'MiSTer_Zaparoo', '/dev/fb0'),
+                                  (42, 'python3', '/dev/null'), (os.getpid(), 'python3', '/dev/fb0')):
+            (proc / str(pid) / 'fd').mkdir(parents=True)
+            (proc / str(pid) / 'comm').write_text(name + '\n')
+            os.symlink(target, proc / str(pid) / 'fd' / '5')
+        self.assertEqual(manager.fb_holders(proc), [(40, 'frontend')])
+        self.assertEqual(manager.fb_holders(proc, exclude={40}), [])
+
     def test_diagnostics_system_facts_stay_free_of_addresses(self):
         (self.card / 'MiSTer.ini').write_text('[MiSTer]\nvga_scaler=0 ; comment\nypbpr=1\nkey_menu_as_rgui=0\n'
                                               '[Menu]\ndirect_video=1\n[ao486]\nvga_scaler=1\n[MisterZine Plex Core]\nvsync_adjust=2\n')
