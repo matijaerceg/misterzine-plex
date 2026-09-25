@@ -134,6 +134,13 @@ func TestCalibrateCornerSetsTheWidthFromTheSquare(t *testing.T) {
 	if s.g.Width < GeometryWidthMin || squareWidth(s.sqW-2, s.sqH) >= GeometryWidthMin {
 		t.Fatalf("left stopped at width %d, square %dx%d", s.g.Width, s.sqW, s.sqH)
 	}
+	// growing both sides keeps the shape but must not run off the screen
+	for i := 0; i < 200; i++ {
+		press(s, input.Right, input.Up)
+	}
+	if s.sqW > w0+72 || s.sqH > h0+64 || (480-s.sqH0)/2-(s.sqH-s.sqH0) < 16 {
+		t.Fatalf("square grew to %dx%d from %dx%d", s.sqW, s.sqH, w0, h0)
+	}
 }
 
 func TestCalibrateBackSavesAndLeaves(t *testing.T) {

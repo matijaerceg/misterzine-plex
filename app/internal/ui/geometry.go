@@ -164,8 +164,11 @@ func (s *Calibrate) Key(ev input.Event, now time.Time) {
 	case calRight:
 		g.Right -= dx
 	case calCorner:
+		// the corner stays near where it started, which spans the whole
+		// width range (15% of the square is 49 pixels or 43 lines) but
+		// keeps the square on the screen when both sides grow
 		w, h := s.sqW+dx, s.sqH-dy
-		if h < 64 || w < 64 {
+		if w < s.sqW0-72 || w > s.sqW0+72 || h < s.sqH0-64 || h > s.sqH0+64 {
 			return
 		}
 		if width := squareWidth(w, h); width >= GeometryWidthMin && width <= GeometryWidthMax {
