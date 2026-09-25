@@ -1,0 +1,32 @@
+# Where a frame lands on the 720x480 raster, for the presenter (arm/plexfb.c
+# fit) and the app's geometry calibration (app/internal/ui/geometry.go Fit).
+# Both test suites read this file, so the pattern the app draws and the
+# picture the presenter shows cannot drift apart.
+#
+# left top right bottom width   aspect      x   y   w   h
+# (edges inside the raster's; width in thousandths; aspect as a fraction)
+
+# the whole raster, as shipped before calibration existed
+0 0 0 0 1000        640/480     0   0   720 480   # 4:3
+0 0 0 0 1000        4/3         0   0   720 480   # 4:3 DVD, aspect from the header
+0 0 0 0 1000        644/480     0   0   720 480   # a hair wider than 4:3: lines kept 1:1
+0 0 0 0 1000        636/480     0   0   720 480   # a hair narrower: no side slivers
+0 0 0 0 1000        720/404     0   60  720 360   # 16:9
+0 0 0 0 1000        16/9        0   60  720 360   # anamorphic 16:9 DVD
+0 0 0 0 1000        720/306     0   104 720 272   # 2.35:1
+0 0 0 0 1000        480/360     0   0   720 480   # small 4:3
+0 0 0 0 1000        6/5         36  0   648 480   # narrower than 4:3: pillarbox
+0 0 0 0 1000        270/480     208 0   304 480   # portrait
+
+# edges moved in for overscan
+16 12 16 12 1000    4/3         18  12  684 456   # 4:3 fills the height
+16 12 16 12 1000    720/404     16  68  688 344   # 16:9 fills the width
+20 10 8 14 1000     4/3         24  10  684 456   # off-centre set
+16 10 16 10 1000    4/3         16  10  688 460   # two lines short of the area: fill it
+120 80 120 80 1150  720/306     120 160 480 158   # the limits
+
+# width corrected for a set that draws too wide or too narrow
+0 0 0 0 980         4/3         6   0   706 480   # too wide: narrower picture
+0 0 0 0 1020        4/3         0   4   720 470   # too narrow: can't widen, so shorter
+0 0 0 0 1020        720/404     0   64  720 352
+0 0 0 0 850         270/480     230 0   258 480

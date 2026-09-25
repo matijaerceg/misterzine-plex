@@ -43,8 +43,8 @@ already received.
 
 Frames are decoded with H.264's loop filter on, which keeps block edges from
 building up between keyframes in dark scenes. The presenter fits each frame
-to the 4:3 screen (letterbox or pillarbox, honouring non-square pixels) as it
-copies it into the frame ring. 50 and 60 fps video is requested from the
+to the 4:3 screen, or to the area set under **Video geometry** (letterbox or
+pillarbox, honouring non-square pixels) as it copies it into the frame ring. 50 and 60 fps video is requested from the
 server at half its frame rate (25 or 29.97 fps), which the board can keep up
 with.
 
@@ -110,6 +110,19 @@ detection: RGB-only CRT profiles need **Safe 480i** in the core OSD.
 The core OSD has **Video output: App settings / Safe 480i**. Normally leave it
 on App settings. HDMI 480p is selected in the app's Options and requires a fresh
 two-second OK hold to keep the change. It reverts if you do not confirm.
+
+**Options > Video geometry** fits video to a set that hides the picture's
+edges (overscan) or draws it too wide or too narrow. It affects video only;
+menus stay where they are. OK steps through the top, right, bottom and left
+edges and then the aspect ratio. The d-pad moves the selected edge in or out:
+line each edge up with the edge of the screen, leaving a tiny bit of
+overscan. For the aspect ratio an arrow marks the square's top-right corner,
+and the d-pad moves that corner: measure the square with a ruler and make it
+as wide as it is tall. Back saves and leaves. Video keeps its shape inside
+the edges, with black bars where its shape differs from the area's. Edges
+move in by up to a sixth of the screen, and the width by up to 15% either
+way. Bringing the top or bottom edge in scales 480 lines into fewer, which
+softens the picture slightly. One calibration serves every video output.
 
 For HDMI scaling and aspect settings, see [HDMI setup](HDMI.md).
 PAL is not yet supported. RGB-only CRTs are not detected automatically.

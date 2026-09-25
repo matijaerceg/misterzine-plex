@@ -302,29 +302,60 @@ static void plane_setup(struct plane_map *m, int sw, int sh, int cx, int cy, int
 	}
 }
 
-/* where a frame of display aspect `aspect` and `sh` lines goes on the raster */
-static void fit(double aspect, int sh, int *dx, int *dy, int *dw, int *dh)
+/* The picture area, from the app's geometry calibration: how far each edge
+ * sits inside the raster's (even, so chroma stays aligned) and the picture's
+ * width in thousandths of the nominal one, for a set that draws the picture
+ * too wide or too narrow. The default is the whole raster at 4:3. */
+struct screen { int l, t, r, b, width; };
+#define SCREEN_MAX_X (W / 6)
+#define SCREEN_MAX_Y (H / 6)
+#define SCREEN_WIDTH_MIN 850
+#define SCREEN_WIDTH_MAX 1150
+static struct screen g_screen = { 0, 0, 0, 0, 1000 };
+
+/* PLEXFB_GEOMETRY "left,top,right,bottom,width": 1 if valid */
+static int parse_screen(const char *s, struct screen *out)
 {
-	int w = W, h = H;
-	if (aspect > 4.0 / 3.0) h = 2 * (int)lround(H * (4.0 / 3.0) / aspect / 2);
-	else                    w = 2 * (int)lround(W * aspect / (4.0 / 3.0) / 2);
-	if (w < 16) w = 16;
-	if (h < 16) h = 16;
-	if (w >= W - W / 60) w = W;          /* near 4:3: no slivers of border */
-	/* within 2% of the frame's own line count, keep its lines 1:1: a resample
-	   that small would only soften the picture (644x480 fills the screen) */
-	if (!(sh & 1) && sh <= H && abs(h - sh) <= H / 50) h = sh;
-	*dw = w; *dh = h; *dx = (W - w) / 2 & ~1; *dy = (H - h) / 2 & ~1;
+	struct screen v;
+	char end;
+	if (!s || sscanf(s, "%d,%d,%d,%d,%d%c", &v.l, &v.t, &v.r, &v.b, &v.width, &end) != 5) return 0;
+	if ((v.l | v.t | v.r | v.b) & 1) return 0;
+	if (v.l < 0 || v.r < 0 || v.l > SCREEN_MAX_X || v.r > SCREEN_MAX_X) return 0;
+	if (v.t < 0 || v.b < 0 || v.t > SCREEN_MAX_Y || v.b > SCREEN_MAX_Y) return 0;
+	if (v.width < SCREEN_WIDTH_MIN || v.width > SCREEN_WIDTH_MAX) return 0;
+	*out = v;
+	return 1;
 }
 
-/* the whole frame, fitted to the raster; frame planes are packed I420 */
+/* where a frame of display aspect `aspect` goes: the largest rectangle of
+   that shape inside the picture area, centred. The raster is 4:3, so a pixel
+   is 8/9 of a line wide, times the width correction. Keep in step with
+   Geometry.Fit in app/internal/ui/geometry.go (tools/testdata/fit_cases.txt). */
+static void fit(const struct screen *s, double aspect, int *dx, int *dy, int *dw, int *dh)
+{
+	int aw = W - s->l - s->r, ah = H - s->t - s->b;
+	double px = 8000.0 / 9.0 / s->width;       /* a pixel's width, in lines */
+	/* within 1/60 of 4:3 is 4:3: frames a hair off it (644x480, 636x480)
+	   fill the screen, lines 1:1, with no slivers of border */
+	if (fabs(aspect * 3 / 4 - 1) <= 1.0 / 60) aspect = 4.0 / 3.0;
+	int w = aw, h = ah;
+	if (aspect * ah > aw * px) h = 2 * (int)lround(aw * px / aspect / 2);
+	else                       w = 2 * (int)lround(aspect * ah / px / 2);
+	if (aw - w <= 2) w = aw;             /* a rounding step short: fill */
+	if (ah - h <= 2) h = ah;
+	if (w < 16) w = 16;
+	if (h < 16) h = 16;
+	*dw = w; *dh = h; *dx = s->l + ((aw - w) / 2 & ~1); *dy = s->t + ((ah - h) / 2 & ~1);
+}
+
+/* the whole frame, fitted to the picture area; frame planes are packed I420 */
 static void geometry_setup(struct geometry *g, int w, int h, double aspect)
 {
 	int dx, dy, dw, dh;
 	int w2 = (w + 1) / 2, h2 = (h + 1) / 2;
 	if (!(aspect > 0.25 && aspect < 4.0)) aspect = (double)w / h;
 	g->w = w; g->h = h; g->aspect = aspect;
-	fit(aspect, h, &dx, &dy, &dw, &dh);
+	fit(&g_screen, aspect, &dx, &dy, &dw, &dh);
 	plane_setup(&g->p[0], w, h, 0, 0, w, h, dx, dy, dw, dh, W, H, 16);
 	for (int i = 1; i < 3; i++)
 		plane_setup(&g->p[i], w2, h2, 0, 0, w2, h2, dx / 2, dy / 2, dw / 2, dh / 2, W / 2, H / 2, 128);
@@ -535,6 +566,9 @@ static void present_loop(double fps, uint32_t seq)
  *   PLEXFB_ACATCH how far the released audio may fall behind the picture before
  *                 the queued audio up to the picture is dropped (default 0.15)
  *   PLEXFB_SCALE_C scale with the plain C loops instead of NEON (same output)
+ *   PLEXFB_GEOMETRY "left,top,right,bottom,width": the picture area from the
+ *                 app's calibration, edges in pixels and lines inside the
+ *                 raster's, width in thousandths (default "0,0,0,0,1000")
  *
  * The gate alone only holds audio back. A stall that keeps the audio from
  * aplay for a while (a late wakeup, a blocked write) would leave every later
@@ -654,8 +688,9 @@ static void *avi_reader(void *arg)
 				geometry_setup(&g_geo, vw, vh, vaspect);
 				vneed = geometry_frame_bytes(&g_geo);
 				const struct plane_map *y = &g_geo.p[0];
-				fprintf(stderr, "plexfb: picture %dx%d, aspect %.3f -> %dx%d at %d,%d%s\n", vw, vh, g_geo.aspect,
-				        y->dw, y->dh, y->dx, y->dy, y->groups || y->cw == y->dw ? "" : " (C scaler)");
+				fprintf(stderr, "plexfb: picture %dx%d, aspect %.3f -> %dx%d at %d,%d (area %d,%d,%d,%d, width %d)%s\n",
+				        vw, vh, g_geo.aspect, y->dw, y->dh, y->dx, y->dy, g_screen.l, g_screen.t, g_screen.r,
+				        g_screen.b, g_screen.width, y->groups || y->cw == y->dw ? "" : " (C scaler)");
 				ready = 1;
 			}
 			if (sz && sz != vneed) {
@@ -820,6 +855,9 @@ int main(int argc, char **argv)
 		if (getenv("PLEXFB_AOFF"))  g_aoff  = atof(getenv("PLEXFB_AOFF"));
 		if (getenv("PLEXFB_ACATCH")) g_acatch = atof(getenv("PLEXFB_ACATCH"));
 		g_scale_c = getenv("PLEXFB_SCALE_C") != NULL;
+		if (getenv("PLEXFB_GEOMETRY") && !parse_screen(getenv("PLEXFB_GEOMETRY"), &g_screen))
+			fprintf(stderr, "plexfb: PLEXFB_GEOMETRY \"%s\" not understood, using the whole screen\n",
+			        getenv("PLEXFB_GEOMETRY"));
 		if (fcntl(0, F_SETPIPE_SZ, 4 << 20) < 0) perror("F_SETPIPE_SZ (ignored)");
 		signal(SIGUSR1, on_usr1);
 		signal(SIGUSR2, on_usr2);

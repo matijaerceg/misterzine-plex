@@ -19,11 +19,13 @@ type Player struct {
 	Script string // path to plexplay.py
 	Fifo   string // its control FIFO
 	LogTo  string
-	Status string       // plexfb's status file; it appears the moment plexfb starts
-	Env    []string     // PLEX_HOST, PLEX_TOKEN, PLEX_CLIENT_ID for the launcher
-	Kbps   func() int   // the transcode cap to ask for, read at each start
-	Boost  func() int   // the surround-to-stereo gain to ask for, read at each start
-	Access func() error // optional official-beta entitlement check
+	Status string     // plexfb's status file; it appears the moment plexfb starts
+	Env    []string   // PLEX_HOST, PLEX_TOKEN, PLEX_CLIENT_ID for the launcher
+	Kbps   func() int // the transcode cap to ask for, read at each start
+	Boost  func() int // the surround-to-stereo gain to ask for, read at each start
+	// Geometry is the presenter's picture area (PLEXFB_GEOMETRY), read at each start
+	Geometry func() string
+	Access   func() error // optional official-beta entitlement check
 }
 
 // Session is one running playback.
@@ -114,6 +116,9 @@ func (p *Player) Start(ratingKey string, offset int) (*Session, error) {
 	}
 	if p.Boost != nil {
 		cmd.Env = append(cmd.Env, "PLEX_AUDIO_BOOST="+strconv.Itoa(p.Boost()))
+	}
+	if p.Geometry != nil {
+		cmd.Env = append(cmd.Env, "PLEXFB_GEOMETRY="+p.Geometry())
 	}
 	if err := cmd.Start(); err != nil {
 		if lf != nil {

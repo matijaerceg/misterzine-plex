@@ -25,11 +25,56 @@ static void fits(int w, int h, double aspect, int ex, int ey, int ew, int eh)
 	geometry_setup(&g, w, h, aspect);
 	const struct plane_map *p = &g.p[0];
 	CHECK(p->dx == ex && p->dy == ey && p->dw == ew && p->dh == eh,
-	      "%dx%d aspect %.4f -> %dx%d at %d,%d, expected %dx%d at %d,%d",
-	      w, h, aspect, p->dw, p->dh, p->dx, p->dy, ew, eh, ex, ey);
+	      "%dx%d aspect %.4f in %d,%d,%d,%d width %d -> %dx%d at %d,%d, expected %dx%d at %d,%d",
+	      w, h, aspect, g_screen.l, g_screen.t, g_screen.r, g_screen.b, g_screen.width,
+	      p->dw, p->dh, p->dx, p->dy, ew, eh, ex, ey);
 	const struct plane_map *u = &g.p[1];
 	CHECK(u->dx == ex / 2 && u->dy == ey / 2 && u->dw == ew / 2 && u->dh == eh / 2,
 	      "%dx%d chroma rectangle %dx%d at %d,%d", w, h, u->dw, u->dh, u->dx, u->dy);
+}
+
+/* tools/testdata/fit_cases.txt, which the app's Go tests read too (found
+   beside this source, or at PLEXFB_FIT_CASES when the test runs elsewhere) */
+static void fit_cases(void)
+{
+	char path[1024];
+	const char *slash = strrchr(__FILE__, '/');
+	snprintf(path, sizeof path, "%.*stestdata/fit_cases.txt", slash ? (int)(slash - __FILE__ + 1) : 0, __FILE__);
+	if (getenv("PLEXFB_FIT_CASES")) snprintf(path, sizeof path, "%s", getenv("PLEXFB_FIT_CASES"));
+	FILE *f = fopen(path, "r");
+	CHECK(f != NULL, "cannot open %s", path);
+	if (!f) return;
+	char line[256];
+	int n = 0;
+	while (fgets(line, sizeof line, f)) {
+		struct screen s;
+		double num, den;
+		int x, y, w, h;
+		if (sscanf(line, "%d %d %d %d %d %lf/%lf %d %d %d %d", &s.l, &s.t, &s.r, &s.b, &s.width,
+		           &num, &den, &x, &y, &w, &h) != 11) continue;
+		char text[64];
+		snprintf(text, sizeof text, "%d,%d,%d,%d,%d", s.l, s.t, s.r, s.b, s.width);
+		CHECK(parse_screen(text, &g_screen), "%s: not accepted", text);
+		/* a frame of that shape at 640 wide, as Plex would send it */
+		int fh = 2 * (int)lround(640 * den / num / 2);
+		if (fh > MAX_SRC_H) fh = MAX_SRC_H;
+		fits(640, fh, num / den, x, y, w, h);
+		n++;
+	}
+	fclose(f);
+	CHECK(n >= 15, "only %d fit cases read from %s", n, path);
+	g_screen = (struct screen){ 0, 0, 0, 0, 1000 };
+}
+
+static void screen_settings(void)
+{
+	struct screen s = { 0, 0, 0, 0, 1000 };
+	const char *bad[] = { "", "1,0,0,0,1000", "0,0,0,0,849", "0,0,0,0,1151", "122,0,0,0,1000",
+	                      "0,82,0,0,1000", "-2,0,0,0,1000", "0,0,0,0", "0,0,0,0,1000x", "0,0,0,0,1000,4" };
+	for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++)
+		CHECK(!parse_screen(bad[i], &s) && s.width == 1000, "PLEXFB_GEOMETRY \"%s\" accepted", bad[i]);
+	CHECK(parse_screen("120,80,120,80,1150", &s) && s.l == 120 && s.b == 80 && s.width == 1150, "the limits refused");
+	CHECK(parse_screen("0,0,0,0,850", &s) && s.width == 850, "the narrowest width refused");
 }
 
 static uint8_t *frame_new(int w, int h)
@@ -202,31 +247,32 @@ static void timing(int w, int h, double aspect)
 
 int main(int argc, char **argv)
 {
-	/* frame shapes Plex sends, and a few it could */
-	fits(640, 480, 640.0 / 480, 0, 0, 720, 480);        /* 4:3 */
-	fits(720, 480, 4.0 / 3.0, 0, 0, 720, 480);          /* 4:3 DVD, aspect from the header */
-	fits(644, 480, 644.0 / 480, 0, 0, 720, 480);        /* a hair wider than 4:3: lines kept 1:1 */
-	fits(636, 480, 636.0 / 480, 0, 0, 720, 480);        /* a hair narrower: no side slivers */
-	fits(720, 404, 720.0 / 404, 0, 60, 720, 360);       /* 16:9 */
-	fits(720, 480, 16.0 / 9.0, 0, 60, 720, 360);        /* anamorphic 16:9 DVD */
-	fits(720, 306, 720.0 / 306, 0, 104, 720, 272);      /* 2.35:1 */
-	fits(480, 360, 480.0 / 360, 0, 0, 720, 480);        /* small 4:3 */
-	fits(576, 480, 1.2, 36, 0, 648, 480);               /* narrower than 4:3: pillarbox */
-	fits(270, 480, 270.0 / 480, 208, 0, 304, 480);      /* portrait */
+	/* frame shapes Plex sends and a few it could, on the whole raster and in
+	   calibrated picture areas */
+	fit_cases();
 	fits(640, 480, 0, 0, 0, 720, 480);                  /* no aspect in the header: square pixels */
+	fits(720, 480, 4.0 / 3.0, 0, 0, 720, 480);          /* 4:3 DVD, aspect from the header */
+	fits(720, 480, 16.0 / 9.0, 0, 60, 720, 360);        /* anamorphic 16:9 DVD */
+	screen_settings();
 
 	headers();
 	crop();
 	passthrough();
 	int shapes[][2] = { {640, 480}, {644, 480}, {720, 404}, {720, 306}, {480, 360}, {576, 480}, {270, 480},
 	                    {642, 482}, {641, 481}, {1280, 720}, {352, 240} };
-	for (unsigned i = 0; i < sizeof shapes / sizeof *shapes; i++) {
-		int w = shapes[i][0], h = shapes[i][1];
-		flat_and_borders(w, h, (double)w / h);
-		ramps(w, h, (double)w / h);
-		neon_matches_c(w, h, (double)w / h);
+	/* the whole raster, then a calibrated area: edges in, both axes resampled */
+	struct screen areas[] = { { 0, 0, 0, 0, 1000 }, { 16, 12, 18, 10, 985 } };
+	for (unsigned a = 0; a < sizeof areas / sizeof *areas; a++) {
+		g_screen = areas[a];
+		for (unsigned i = 0; i < sizeof shapes / sizeof *shapes; i++) {
+			int w = shapes[i][0], h = shapes[i][1];
+			flat_and_borders(w, h, (double)w / h);
+			ramps(w, h, (double)w / h);
+			neon_matches_c(w, h, (double)w / h);
+		}
+		neon_matches_c(720, 480, 16.0 / 9.0);
 	}
-	neon_matches_c(720, 480, 16.0 / 9.0);
+	g_screen = areas[0];
 #ifdef HAVE_NEON
 	printf("NEON build\n");
 #endif

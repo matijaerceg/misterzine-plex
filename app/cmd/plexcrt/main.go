@@ -147,6 +147,7 @@ func main() {
 		Status: "/tmp/plexfb.stat", Env: playerEnv, Kbps: cfg.BitrateKbps, Boost: cfg.AudioBoostValue}
 	player.Access = func() error { return beta.Check(filepath.Dir(*cfgPath)) }
 	app := ui.New(client, r, player, lg)
+	player.Geometry = app.VideoGeometry
 	watching := make(chan struct{})
 	go r.Watch(lg.Printf, app.WakeUp, watching)
 	defer close(watching)
