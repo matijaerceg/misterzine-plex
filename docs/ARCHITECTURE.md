@@ -2,8 +2,8 @@
 
 The Go application runs on MiSTer's ARM processor. It authenticates with Plex,
 browses libraries and draws into a shared DDR frame ring. The FPGA scans out the
-image and provides controller status, a playback overlay and moving scrub/focus
-sprites. The Python launcher manages transcoding and playback; FFmpeg decodes
+image and provides controller status, a playback overlay, moving scrub/focus
+sprites and an output brightness the app lowers when idle. The Python launcher manages transcoding and playback; FFmpeg decodes
 into the C presenter, which synchronizes video and PCM audio with display timing.
 
 Write-combined framebuffer memory is expensive to read. Rendering composes in

@@ -31,6 +31,9 @@ Detailed behavior and display settings. For everyday help, see the
   for that, the first time the filter needs it, and the answers are kept in the
   cache folder. An update waiting under Options is marked with an amber dot in
   the menu.
+- After three minutes without a press in the menus or on a paused video, the
+  screen dims to a quarter of its brightness. The next press only brings it
+  back; it does not also act. The sign-in code never dims.
 - To leave the app, open MiSTer's OSD and return to the MiSTer Menu core.
 
 ### Connecting after power-on

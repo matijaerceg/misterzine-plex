@@ -7,6 +7,7 @@
 //	BASE+0x28  overlay: seq_a, x|y<<16, w|h<<16, addr, en, seq_b (a seqlock)
 //	BASE+0x40  status: field_cnt, seq_shown, joy (joy1<<16|joy0), key (key_cnt<<11|ps2)
 //	BASE+0x50  sprites: dot x|y<<16|en<<31, dot rgb, bar x|y<<16|en<<31, bar w|h<<16, bar rgb
+//	BASE+0x88  brightness: 0x444D0000|level, level of 256 (see bright.go)
 //	BASE+0x100000 + slot*0x160000  frame slots, xRGB8888 720x480
 //	BASE+0x680000 .. 0x7E0000      overlay pixels, ARGB8888
 package ring
@@ -52,6 +53,7 @@ type Ring struct {
 	pubSeq          uint32 // the same, readable from Watch's goroutine
 	cadence         bool
 	cadenceField    uint32 // field of the previous cadence-controlled publication
+	dim             uint32 // Full minus the brightness asked of the core
 }
 
 // Open maps /dev/fb0. It fails if the core is not the one exporting the ring.

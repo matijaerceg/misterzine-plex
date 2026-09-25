@@ -94,6 +94,7 @@ type App struct {
 	scr        *gfx.Canvas
 	osd        OSD  // the playback overlay: the core's plane
 	crop       Crop // the playback's crop: Options' at the start, then the playback menu's
+	dim        idleDim
 
 	stack  []Screen
 	dirty  bool
@@ -417,6 +418,9 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 				sess.Stop()
 				continue
 			}
+			if a.wake(ev, time.Now()) {
+				continue
+			}
 			if !up {
 				if ev.Key == input.Back && !ev.Release && !ev.Repeat {
 					sess.Stop() // gave up waiting
@@ -441,6 +445,7 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 				}
 				lastField = f
 			}
+			a.idle(time.Now(), up && ctl.paused)
 			if !up {
 				if a.Out.Foreign() || a.Player.Started(a.Starting) {
 					up = true // the video is on screen: the strip runs out on its own
@@ -471,7 +476,7 @@ func (a *App) countdown(next *plex.Item) bool {
 	for {
 		select {
 		case ev, ok := <-a.events:
-			if !ok || ev.Release || ev.Repeat {
+			if !ok || a.wake(ev, time.Now()) || ev.Release || ev.Repeat {
 				continue
 			}
 			switch ev.Key {
@@ -481,6 +486,7 @@ func (a *App) countdown(next *plex.Item) bool {
 				return false
 			}
 		case <-tick.C:
+			a.idle(time.Now(), false)
 			left := time.Until(deadline)
 			if left <= 0 {
 				return true
@@ -860,6 +866,7 @@ func (a *App) Run(events <-chan input.Event, stop <-chan struct{}) {
 			}
 		}
 		a.runLater()
+		a.idle(time.Now(), a.menuWaiting()) // the idle tick checks it every second
 		a.pollUpdates(time.Now())
 		if h, ok := a.top().(*Home); ok {
 			h.pollHome(time.Now())
@@ -950,6 +957,9 @@ func (a *App) pacedTransition() bool {
 }
 
 func (a *App) key(ev input.Event, now time.Time) {
+	if a.wake(ev, now) {
+		return
+	}
 	// Text screens get keyboard editing before legacy aliases (Backspace=Back,
 	// Space=OK, WASD=arrows). Controller events keep their existing behavior.
 	if ev.Keyboard {

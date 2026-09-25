@@ -49,7 +49,13 @@
 //                             toggled, else adds vx (pixels per field),
 //                             clamped to xmin..xmax. So a held scrub runs
 //                             field-locked whatever the ARM is doing.
-//    BASE + 0x68  dot_x, written by the core every line: where the dot is
+//    BASE + 0x68  dot_x, written by the core every field: where the dot is
+//                 (bits 9:0) and the brightness in use (bits 24:16)
+//    BASE + 0x88  brightness, written by the UI, taken at every vsync:
+//                   u32 0x444D0000 | level   level 0..256 of 256
+//                 Every pixel leaves as value * level / 256, after the
+//                 overlay and the sprites. Any other word (a wiped ring
+//                 reads 0) means full brightness.
 //    BASE + 0x100000 + buf * 0x160000   frame ring, 4 slots
 //    BASE + 0x680000 .. 0x7E0000        overlay pixels (the UI places them)
 //
@@ -135,6 +141,7 @@ reg [23:0] d_rgb = 24'hFFFFFF;
 reg  [9:0] b_x = 0, b_y = 0, b_w = 0, b_h = 0;   // bar sprite
 reg        b_en = 0;
 reg [23:0] b_rgb = 24'hE0E0E0;
+reg  [8:0] lvl = 9'd256;                         // brightness, of 256
 reg [63:0] sw0, sw1, sw2;
 reg  [2:0] scnt;
 reg [31:0] field_cnt = 0;
@@ -167,8 +174,12 @@ reg [3:0] y_x_q;
 
 // where the current pixel sits in the overlay rectangle
 wire [10:0] ox     = hc - {1'b0, o_x};
-wire        in_osd = o_en && (hc >= {1'b0, o_x}) && (hc < ({1'b0, o_x} + {1'b0, o_w})) &&
+wire        osd_at = o_en && (hc >= {1'b0, o_x}) && (hc < ({1'b0, o_x} + {1'b0, o_w})) &&
                      (vc >= o_y) && (vc < (o_y + o_h));
+// Registered like the line buffer reads: hc moves only on ce_pix, at most
+// every other clock, so a clock later it still names the same pixel. Keeps
+// these compares out of the blend and brightness multiplies' clock.
+reg         in_osd = 0;
 
 always @(posedge clk) begin
 	if (lb_we && lb_plane == 2'd0) lb0[{wr_half, lb_waddr}]      <= lb_wdata;
@@ -180,6 +191,7 @@ always @(posedge clk) begin
 	q2 <= lb2[{y_half, y_x[9:4]}];
 	y_x_q <= y_x[3:0];
 	q3 <= lb3[{rd_half, ox[9:1]}];
+	in_osd <= osd_at;
 end
 
 wire signed [11:0] d_nx = $signed({2'b00, d_x}) + {{4{r_vx[7]}}, r_vx};
@@ -226,6 +238,7 @@ reg  [4:0] hcnt;
 reg [63:0] hw0, hw1, hw2, hw3, hw4, hw5, hw6, hw7;
 // +0x70: seq_a, 0x56500000|mode, seq_b, reserved. Heartbeat every 250 ms.
 reg [63:0] hw14, hw15;
+reg [63:0] hw17;             // +0x88: the brightness word
 reg [31:0] mode_seq = 0;
 reg [7:0] mode_age = 8'd120;
 reg  [8:0] words_left;
@@ -283,6 +296,7 @@ always @(posedge clk) begin
 		valid <= 0;
 		app_fresh <= 0;
 		mode_age <= 8'd120;
+		lvl <= 9'd256;
 		hdr_pend <= 0;
 		line_pend <= 0;
 	end
@@ -301,6 +315,7 @@ always @(posedge clk) begin
 					4'd7: hw7 <= DDRAM_DOUT;
 					5'd14: hw14 <= DDRAM_DOUT;
 					5'd15: hw15 <= DDRAM_DOUT;
+					5'd17: hw17 <= DDRAM_DOUT;
 					default: ;
 				endcase
 				hcnt <= hcnt + 5'd1;
@@ -335,7 +350,7 @@ always @(posedge clk) begin
 				if (hdr_pend) begin
 					hdr_pend       <= 1'b0;
 					DDRAM_ADDR     <= BASE_WORDS;
-					DDRAM_BURSTCNT <= 8'd16;
+					DDRAM_BURSTCNT <= 8'd18;   // through the brightness word
 					DDRAM_RD       <= 1'b1;
 					hcnt           <= 4'd0;
 					st             <= S_HDR_WAIT;
@@ -347,7 +362,10 @@ always @(posedge clk) begin
 				end
 			end
 
-			S_HDR_WAIT: if (hcnt == 5'd16) begin
+			S_HDR_WAIT: if (hcnt == 5'd18) begin
+				// taken in the blanking at the top of the field, so a change
+				// never splits a picture
+				lvl <= (hw17[31:16] == 16'h444D && hw17[8:0] <= 9'd256) ? hw17[8:0] : 9'd256;
 				if (hw14[31:0] == hw15[31:0] && !hw14[0] &&
 				    hw14[63:34] == 30'h15940000 && hw14[33:32] < 2'd3 &&
 				    hw14[31:0] != mode_seq) begin
@@ -407,7 +425,7 @@ always @(posedge clk) begin
 				DDRAM_ADDR     <= BASE_WORDS + 29'd13;
 				DDRAM_BURSTCNT <= 8'd1;
 				DDRAM_BE       <= 8'hFF;
-				DDRAM_DIN      <= {28'h5650000, scan_status, 22'd0, d_x};
+				DDRAM_DIN      <= {28'h5650000, scan_status, 7'd0, lvl, 6'd0, d_x};
 				DDRAM_WE       <= 1'b1;
 				st             <= S_IDLE;
 			end
@@ -612,9 +630,24 @@ wire [7:0] fr = in_dot ? d_rgb[23:16] : in_bar ? b_rgb[23:16] : mr;
 wire [7:0] fg = in_dot ? d_rgb[15:8]  : in_bar ? b_rgb[15:8]  : mg;
 wire [7:0] fb = in_dot ? d_rgb[7:0]   : in_bar ? b_rgb[7:0]   : mb;
 
+// ---------------- brightness ----------------
+// last, so the picture, the overlay and the sprites dim together; ahead of
+// the dither, which smooths the smaller range. 256 passes a value through.
+function [7:0] scale8(input [7:0] v, input [8:0] l);
+	reg [16:0] p;
+	begin
+		p = v * l;
+		scale8 = p[15:8];
+	end
+endfunction
+
+wire [7:0] lr = scale8(fr, lvl);
+wire [7:0] lg = scale8(fg, lvl);
+wire [7:0] lb = scale8(fb, lvl);
+
 always @(posedge clk) begin
 	if (ce_pix) begin
-		if (active) {r, g, b} <= {dither8(fr, dth), dither8(fg, dth), dither8(fb, dth)};
+		if (active) {r, g, b} <= {dither8(lr, dth), dither8(lg, dth), dither8(lb, dth)};
 		else        {r, g, b} <= 24'h000000;
 	end
 end

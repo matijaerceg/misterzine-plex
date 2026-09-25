@@ -49,6 +49,7 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 		if lost {
 			header = r.headerWords() // as found, before the redraw replaces it
 			lostHeader++
+			r.writeBrightness() // a dimmed screen stays dimmed
 			if wake != nil {
 				wake()
 			}

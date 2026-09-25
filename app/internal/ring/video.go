@@ -34,6 +34,7 @@ func (r *Ring) StartVideo(mode uint32) func() {
 			atomic.StoreUint32(&r.hdr[29], 0x56500000|mode)
 			atomic.StoreUint32(&r.hdr[30], seq)
 			atomic.StoreUint32(&r.hdr[28], seq)
+			r.writeBrightness()
 			select {
 			case <-tick.C:
 			case <-stop:
@@ -41,7 +42,7 @@ func (r *Ring) StartVideo(mode uint32) func() {
 			}
 		}
 	}()
-	return func() { close(stop); <-done; atomic.StoreUint32(&r.hdr[29], 0) }
+	return func() { close(stop); <-done; atomic.StoreUint32(&r.hdr[29], 0); r.clearBrightness() }
 }
 
 // SetVideo restores a known preference without starting another trial.
