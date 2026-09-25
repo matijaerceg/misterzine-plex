@@ -12,7 +12,8 @@ asynchronously; text and images are cached. Playback controls use a FIFO and
 status files. Account settings use atomic saves and a last-good backup.
 
 The installer selects versioned releases, verifies payload hashes and keeps
-settings/cache separate. Rollback selects the previous release. Existing data
+settings/cache separate. Rollback selects the previous release; after a successful
+update only the current and previous release folders are kept. Existing data
 paths and legacy launcher migration are retained across the product rename.
 
 Official beta apps check offline batch access before playback. Numeric-code builds

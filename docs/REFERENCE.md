@@ -79,6 +79,9 @@ update either; only **Restart now** does. The selected channel is registered in
 `downloader_misterzine_plex.ini`. Installation data stays in
 `/media/fat/misterzine-plex`.
 
+Each installed release keeps its own folder. Once an update has started, Plex keeps
+the new release and the previous one and removes older release folders.
+
 **MisterZine-Plex-Rollback** selects the previous installed release without opening
 Plex. Return to MiSTer Menu before using it. **MisterZine-Plex-Uninstall** works
 offline and removes Plex binaries, entries, staging files and its database
@@ -86,6 +89,11 @@ registration. The default keeps sign-in, preferences, artwork and acquired codes
 Removing all Plex data requires typing **REMOVE**. Downloader and unrelated files
 are preserved. A manually extracted `misterzine-plex-beta` ZIP folder can be
 removed separately after installation.
+
+If Zaparoo is installed, Plex also appears under **Other** in Zaparoo. The installer
+keeps its own entry, `zaparoo/launchers/misterzine-plex.toml`, pointed at the
+selected release and removes it on uninstall. Nothing needs adding to Zaparoo's
+`config.toml`.
 
 ### Showcase captures
 
