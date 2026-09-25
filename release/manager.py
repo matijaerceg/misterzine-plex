@@ -687,7 +687,9 @@ def prepare_framebuffer(parameters=Path('/sys/module/MiSTer_fb/parameters')):
     # MiSTer sizes fbdev for the selected HDMI/menu profile. The Plex core
     # instead uses a fixed frame ring in this reserved memory. Enlarge only
     # the Linux mapping; this does not change the core or HDMI scan timing.
-    # MiSTer reapplies its own framebuffer mode when another core is loaded.
+    # MiSTer reapplies its own framebuffer mode when another core is loaded,
+    # and can still do so just after this write, so the app and the presenter
+    # check it again before they map the ring.
     mode = parameters / 'mode'
     values = [int(value) for value in mode.read_text().split()]
     if len(values) != 5:

@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <math.h>
@@ -82,6 +83,32 @@ static struct hdr *hdr;
 static struct stat_w *stat;
 
 /*
+ * MiSTer main sizes the Linux framebuffer for its own HDMI mode: at 720p, or
+ * with direct video, /dev/fb0 maps less than the ring. Main writes that mode
+ * again whenever it sets a video mode, from a worker thread, so the launcher's
+ * 1920x1080 can be undone after it. Put it back before mapping. Writing the
+ * mode clears this memory; the presenter publishes its own frames anyway.
+ */
+#define FB_MODE_FILE "/sys/module/MiSTer_fb/parameters/mode"
+static void enlarge_fb(size_t len)
+{
+	char mode[64] = "";
+	int fmt, rb, w, h, stride;
+	FILE *f = fopen(FB_MODE_FILE, "r");
+	if (!f) return;
+	if (!fgets(mode, sizeof mode, f)) mode[0] = 0;
+	fclose(f);
+	if (sscanf(mode, "%d %d %d %d %d", &fmt, &rb, &w, &h, &stride) != 5) return;
+	if (fmt == 8888 && (size_t)stride * (size_t)h >= len) return;
+	mode[strcspn(mode, "\n")] = 0;
+	fprintf(stderr, "plexfb: framebuffer mode \"%s\" maps less than the ring; setting 1920x1080\n", mode);
+	f = fopen(FB_MODE_FILE, "w");
+	if (!f) { perror(FB_MODE_FILE); return; }
+	fputs("8888 1 1920 1080 7680\n", f);
+	if (fclose(f)) perror(FB_MODE_FILE);
+}
+
+/*
  * Two ways to reach the buffer:
  *   /dev/mem at PHYS_BASE  - strongly ordered mapping, every store waits
  *                            (measured 87 MB/s idle, 44 MB/s next to ffmpeg)
@@ -106,8 +133,17 @@ static void map_mem(void)
 	if (fd < 0) { perror(dev); exit(1); }
 	/* fb0 is 1920*1080*4 = 8,294,400 bytes; mmap refuses anything longer */
 	size_t len = off ? MAP_SIZE : 0x7E0000u;   /* slot 4 ends at 0x7D1800 */
-	map = mmap(0, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
-	if (map == MAP_FAILED) { perror("mmap"); exit(1); }
+	for (int tries = 0; ; tries++) {
+		if (!off) enlarge_fb(len);
+		map = mmap(0, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+		if (map != MAP_FAILED) break;
+		/* main's own mode write can land between ours and the mapping */
+		if (off || errno != EINVAL || tries == 20) {
+			fprintf(stderr, "plexfb: cannot map %zu bytes of %s: %s\n", len, dev, strerror(errno));
+			exit(1);
+		}
+		usleep(50000);
+	}
 	hdr  = (struct hdr *)(map);
 	stat = (struct stat_w *)(map + STAT_OFF);
 }
@@ -158,6 +194,10 @@ static void wait_for_field(double target)
 		if (f != last) { last = f; last_t = t; }
 		if ((double)f >= target || g_quit) return;
 		double eta = last_t + (target - f) * FIELD_S - t;   /* seconds to go */
+		/* A field at most, then look again: a framebuffer mode write clears
+		   the counter for a moment, and a sleep worked out from that would
+		   last as long as the core has been running. */
+		if (eta > FIELD_S) eta = FIELD_S;
 		if (eta > 0.0035) usleep((useconds_t)((eta - 0.0035) * 1e6));
 		else if (eta > 0.0003) usleep(100);
 		/* else spin */

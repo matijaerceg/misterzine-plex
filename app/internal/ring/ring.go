@@ -14,6 +14,7 @@ package ring
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"sync/atomic"
 	"syscall"
@@ -60,9 +61,21 @@ func Open() (*Ring, error) {
 		return nil, err
 	}
 	defer f.Close()
-	mem, err := syscall.Mmap(int(f.Fd()), 0, mapSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, err
+	var mem []byte
+	for try := 0; ; try++ {
+		from, werr := enlargeMode()
+		mem, err = syscall.Mmap(int(f.Fd()), 0, mapSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		if err == nil {
+			break
+		}
+		// main's own mode write can land between ours and the mapping
+		if err != syscall.EINVAL || try == 20 {
+			if werr != nil {
+				return nil, fmt.Errorf("framebuffer mode %q maps less than the frame ring and could not be changed: %v", from, werr)
+			}
+			return nil, fmt.Errorf("cannot map the frame ring (framebuffer mode %q): %w", readMode(), err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	r := &Ring{mem: mem}
 	r.hdr = (*[32]uint32)(unsafe.Pointer(&mem[0]))

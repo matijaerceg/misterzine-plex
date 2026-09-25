@@ -15,18 +15,13 @@ import (
 // itself in one diagnostics report. When the header is found lost, wake is
 // called so the app redraws at once: MiSTer main wipes this memory whenever
 // the framebuffer mode is written, and a redraw is what brings the picture
-// back. It stops when stop is closed.
+// back. A mode that maps less than the ring is put back to 1920x1080, so the
+// presenter started for each playback can still map it. It stops when stop
+// is closed.
 func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{}) {
-	const modeFile = "/sys/module/MiSTer_fb/parameters/mode"
-	readMode := func() string {
-		b, err := os.ReadFile(modeFile)
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(b))
-	}
-	logf("watch: framebuffer mode %q, console %s", readMode(), consoleState())
 	mode := readMode()
+	logf("watch: framebuffer mode %q, console %s", mode, consoleState())
+	mode = keepRingMapped(logf, mode)
 	phys, fromDriver := ringPhys()
 	source := "as the framebuffer driver reports it"
 	if !fromDriver {
@@ -100,7 +95,7 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 		if n%10 == 0 {
 			if m := readMode(); m != mode {
 				logf("watch: framebuffer mode changed from %q to %q", mode, m)
-				mode = m
+				mode = keepRingMapped(logf, m)
 			}
 		}
 		if time.Since(report) >= 5*time.Second {
@@ -112,6 +107,22 @@ func (r *Ring) Watch(logf func(string, ...any), wake func(), stop <-chan struct{
 			report = time.Now()
 		}
 	}
+}
+
+// keepRingMapped puts back a framebuffer mode that maps less than the ring
+// and returns the mode now in place.
+func keepRingMapped(logf func(string, ...any), mode string) string {
+	from, err := enlargeMode()
+	if err != nil {
+		logf("watch: framebuffer mode %q maps less than the ring and could not be changed: %v", from, err)
+		return mode
+	}
+	if from == "" {
+		return mode
+	}
+	now := readMode()
+	logf("watch: framebuffer mode %q maps less than the ring; set it to %q", from, now)
+	return now
 }
 
 // publishedBlack samples a handful of pixels of the published slot. Reading
