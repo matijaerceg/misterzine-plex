@@ -25,6 +25,18 @@ func TestDotRunKeepsTheLoadBit(t *testing.T) {
 	}
 }
 
+func TestPublishedSaysWhenTheHeaderIsWiped(t *testing.T) {
+	r := &Ring{hdr: new([32]uint32)}
+	r.hdr[0], r.hdr[1] = magic, 41
+	if seq, ok := r.Published(); seq != 41 || !ok {
+		t.Fatalf("published %d, %v", seq, ok)
+	}
+	r.hdr[0], r.hdr[1] = 0, 0
+	if _, ok := r.Published(); ok {
+		t.Fatal("a wiped header read as a frame")
+	}
+}
+
 func TestForeignNeedsAFrame(t *testing.T) {
 	r := &Ring{hdr: new([32]uint32)}
 	r.hdr[0], r.hdr[1], r.seq = magic, 7, 7

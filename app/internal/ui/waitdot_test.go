@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"plexcrt/internal/gfx"
+	"plexcrt/internal/input"
 )
 
 // coreOSD plays the core's part for the dot sprite (rtl/ddr_scanout.v):
@@ -46,10 +47,15 @@ func (c *coreOSD) vsync() {
 	}
 }
 
-// runDot steps a start dot for n fields, the app waking in every field
+// waitDotAt reports whether the wait dot is what the core shows.
+func (c *coreOSD) waitDotAt() bool {
+	return c.on && c.y == WaitDotY && c.rgb == uint32(gfx.Amber)
+}
+
+// runDot steps a wait dot for n fields, the app waking in every field
 // but the skipped ones, and returns where the dot showed in each field
 // (-1 when hidden).
-func runDot(d *startDot, c *coreOSD, n int, skip func(field int) bool) []int {
+func runDot(d *waitDot, c *coreOSD, n int, skip func(field int) bool) []int {
 	var seen []int
 	for f := 0; f < n; f++ {
 		c.vsync()
@@ -65,9 +71,9 @@ func runDot(d *startDot, c *coreOSD, n int, skip func(field int) bool) []int {
 	return seen
 }
 
-func TestStartDotRunsEvenlyBetweenTheEnds(t *testing.T) {
-	d := newStartDot("")
-	if d.xmin != 320 || d.xmax != 400 || d.v != 2 || d.y != 240 {
+func TestWaitDotRunsEvenlyBetweenTheEnds(t *testing.T) {
+	d := newWaitDot("")
+	if d.xmin != 342 || d.xmax != 378 || d.v != 2 || d.y != 240 {
 		t.Fatalf("default path %d..%d at %d px/field, y %d", d.xmin, d.xmax, d.v, d.y)
 	}
 	c := &coreOSD{dx: 600, asked: 999, askedSet: true} // left elsewhere by a scrub
@@ -96,8 +102,8 @@ func TestStartDotRunsEvenlyBetweenTheEnds(t *testing.T) {
 	}
 }
 
-func TestStartDotRestsAtTheWallWhenTheAppIsLate(t *testing.T) {
-	d := newStartDot("")
+func TestWaitDotRestsAtTheWallWhenTheAppIsLate(t *testing.T) {
+	d := newWaitDot("")
 	c := &coreOSD{}
 	// the app misses four fields just as the dot reaches the right end
 	arrive := 1 + (d.xmax-d.xmin)/d.v
@@ -118,20 +124,20 @@ func TestStartDotRestsAtTheWallWhenTheAppIsLate(t *testing.T) {
 	}
 }
 
-func TestStartDotSpec(t *testing.T) {
+func TestWaitDotSpec(t *testing.T) {
 	for _, tc := range []struct {
 		spec          string
 		v, xmin, xmax int
 	}{
-		{"", 2, 320, 400},
-		{"junk", 2, 320, 400},
-		{"3", 3, 321, 399}, // 80 is not whole steps of 3: 78
-		{"3,80", 3, 321, 399},
+		{"", 2, 342, 378},
+		{"junk", 2, 342, 378},
+		{"4", 4, 342, 378},
+		{"3,80", 3, 321, 399}, // 80 is not whole steps of 3: 78
 		{" 1 , 120 ", 1, 300, 420},
 		{"20,5000", 8, SafeX, SafeX + SafeW}, // clamped to 8 px and the safe width
 		{"0,0", 1, 359, 361},
 	} {
-		d := newStartDot(tc.spec)
+		d := newWaitDot(tc.spec)
 		if d.v != tc.v || d.xmin != tc.xmin || d.xmax != tc.xmax {
 			t.Errorf("%q: %d px/field on %d..%d, want %d on %d..%d", tc.spec, d.v, d.xmin, d.xmax, tc.v, tc.xmin, tc.xmax)
 		}
@@ -141,33 +147,159 @@ func TestStartDotSpec(t *testing.T) {
 	}
 }
 
-func TestStartStripKeepsTheDotUntilThePicture(t *testing.T) {
-	a := cropApp(t)
-	p := playingCrop(a, 1.78)
+// waitPlaying is a playback controller as PlayQueue makes one, drawing
+// into a fake core.
+func waitPlaying(t *testing.T) *Playing {
+	p := playingCrop(cropApp(t), 1.78)
 	p.visible = false
 	p.dur, p.pos = 1800, 600
 	p.canvas, p.alpha, p.painter = gfx.NewCanvas(720, 480), make([]byte, 720*480), newPainter()
-	p.start = newStartDot("")
-	c := &coreOSD{}
-	for f := 0; f < 90; f++ {
+	p.starting = true
+	return p
+}
+
+// tickFields runs Tick for n fields from t0, a field apart, and returns the
+// time after them.
+func tickFields(p *Playing, c *coreOSD, t0 time.Time, n int, each func(f int)) time.Time {
+	for f := 0; f < n; f++ {
 		c.vsync()
+		p.Tick(t0, c, true)
+		if each != nil {
+			each(f)
+		}
+		t0 = t0.Add(16683 * time.Microsecond)
+	}
+	return t0
+}
+
+func TestStartStripKeepsTheDotUntilThePicture(t *testing.T) {
+	p := waitPlaying(t)
+	c := &coreOSD{}
+	now := tickFields(p, c, time.Now(), 90, func(f int) {
 		p.peekAt, p.peekFor = time.Now(), OsdLinger // as playLoop does before the picture
-		p.Tick(time.Now(), c, true)
-		if f > 0 && (!c.on || c.y != StartDotY || c.rgb != uint32(gfx.Amber)) {
+		if f > 0 && !c.waitDotAt() {
 			t.Fatalf("field %d: the start strip took the dot down (on %v, y %d)", f, c.on, c.y)
 		}
 		if c.barOn {
 			t.Fatalf("field %d: the bar sprite showed over the start", f)
 		}
-	}
-	p.pictureUp(c)
-	if c.on || c.vx != 0 || p.start != nil {
+	})
+	p.framed(now, c)
+	if c.on || c.vx != 0 || p.wait != nil || p.starting {
 		t.Fatalf("the dot outlived the picture: on %v, run %d", c.on, c.vx)
 	}
 	// the strip lingers over the picture with no dot, and the run stays stopped
 	c.vsync()
-	p.Tick(time.Now(), c, true)
+	p.Tick(now, c, true)
 	if c.on || c.vx != 0 {
 		t.Fatalf("the strip brought the dot back: on %v, run %d", c.on, c.vx)
+	}
+}
+
+func TestWaitDotComesUpWhenThePictureStalls(t *testing.T) {
+	p := waitPlaying(t)
+	c := &coreOSD{}
+	t0 := time.Now()
+	p.framed(t0, c) // the picture is up
+	// frames keep coming: no dot
+	now := tickFields(p, c, t0, 60, func(f int) {
+		if f%2 == 0 {
+			p.framed(t0.Add(time.Duration(f)*16683*time.Microsecond), c)
+		}
+		if c.on {
+			t.Fatalf("field %d: a dot over a moving picture", f)
+		}
+	})
+	// a seek: the frames stop; nothing for StallDelay, then the dot
+	stall := now
+	now = tickFields(p, c, now, 60, nil)
+	if !c.waitDotAt() {
+		t.Fatal("no dot a second into a stall")
+	}
+	if p.wait == nil || stall.Add(StallDelay).After(now) {
+		t.Fatal("the stall was not timed from the last frame")
+	}
+	// the new stream's first frame takes it down at once
+	p.framed(now, c)
+	if c.on || c.vx != 0 {
+		t.Fatalf("the dot outlived the stall: on %v, run %d", c.on, c.vx)
+	}
+}
+
+func TestWaitDotStaysDownForAQuickSeek(t *testing.T) {
+	p := waitPlaying(t)
+	c := &coreOSD{}
+	now := time.Now()
+	p.framed(now, c)
+	// a 400 ms gap: under StallDelay
+	now = tickFields(p, c, now, 24, func(int) {
+		if c.on {
+			t.Fatal("a dot in a gap shorter than StallDelay")
+		}
+	})
+	p.framed(now, c)
+	tickFields(p, c, now, 10, func(int) {
+		if c.on {
+			t.Fatal("a dot after the frames came back")
+		}
+	})
+}
+
+func TestWaitDotNotWhenPausedEndingOrStopping(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(p *Playing)
+	}{
+		{"paused", func(p *Playing) { p.paused = true; p.pausedAt = time.Now() }},
+		{"at the end", func(p *Playing) { p.pos = p.dur - 2 }},
+		{"stopping", func(p *Playing) { p.ending = true }},
+	} {
+		p := waitPlaying(t)
+		c := &coreOSD{}
+		now := time.Now()
+		p.framed(now, c)
+		tc.set(p)
+		tickFields(p, c, now, 90, func(f int) {
+			if c.on {
+				t.Fatalf("%s: a dot at field %d", tc.name, f)
+			}
+		})
+	}
+}
+
+func TestResumeAfterPauseGetsTheFullDelay(t *testing.T) {
+	p := waitPlaying(t)
+	c := &coreOSD{}
+	now := time.Now()
+	p.framed(now, c)
+	p.paused, p.pausedAt = true, now
+	now = tickFields(p, c, now, 120, nil) // two seconds paused: no frames, no dot
+	p.paused = false                      // resumed; the first frame is a moment away
+	tickFields(p, c, now, 20, func(f int) {
+		if c.on {
+			t.Fatalf("a dot %d fields after resuming", f)
+		}
+	})
+}
+
+func TestScrubTakesTheDotFromAStall(t *testing.T) {
+	p := waitPlaying(t)
+	c := &coreOSD{}
+	now := time.Now()
+	p.framed(now, c)
+	now = tickFields(p, c, now, 60, nil)
+	if !c.waitDotAt() {
+		t.Fatal("no dot in the stall")
+	}
+	// a press of right starts a scrub on the strip: the dot becomes its cursor
+	p.Key(input.Event{Key: input.Right}, now)
+	p.Tick(now, c, false)
+	if p.wait != nil || c.waitDotAt() {
+		t.Fatal("the wait dot stayed over a scrub")
+	}
+	c.vsync()
+	want := SafeX + int(float64(SafeW)*p.scrubTo/p.dur+0.5)
+	if c.dx != want {
+		t.Fatalf("the scrub cursor starts at %d, not at %d: the core never took its place", c.dx, want)
 	}
 }

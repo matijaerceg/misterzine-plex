@@ -187,6 +187,12 @@ func (r *Ring) Foreign() bool {
 	return atomic.LoadUint32(&r.hdr[0]) == magic && atomic.LoadUint32(&r.hdr[1]) != r.seq
 }
 
+// Published is the header's frame number, which moves with every frame
+// published by anyone, and false when the header has been wiped.
+func (r *Ring) Published() (uint32, bool) {
+	return atomic.LoadUint32(&r.hdr[1]), atomic.LoadUint32(&r.hdr[0]) == magic
+}
+
 // Present copies a canvas into the next slot and publishes it.
 func (r *Ring) Present(c *gfx.Canvas) error {
 	if c.W != W || c.H != H {

@@ -75,8 +75,14 @@ type Playing struct {
 	skip     *plex.Marker
 	skipOff  bool // the skip button was dismissed for this marker
 	skipAt   time.Time
-	restart  bool      // the stream must restart for a new track: seek to here
-	start    *startDot // until the picture is up: the dot runs in the middle of the black
+	restart  bool // the stream must restart for a new track: seek to here
+	// the wait dot (waitdot.go): it runs in the middle while the picture
+	// is held up, from the start until the first frame and on any stall
+	starting bool      // no frame from the presenter yet
+	ending   bool      // stopping: no more dot
+	frameAt  time.Time // when the presenter last published a frame
+	wait     *waitDot  // the dot, while it runs
+	waitSpec string    // PLEXCRT_WAIT_DOT, for tuning on a set
 }
 
 type listMode struct {
@@ -174,15 +180,6 @@ func NewPlaying(app *App, it *plex.Item, queue []*plex.Item, idx int, send func(
 		}
 	}
 	return p
-}
-
-// pictureUp ends the start: the presenter's first frame is on screen, so
-// the dot goes and the strip runs out over the picture.
-func (p *Playing) pictureUp(osd OSD) {
-	if p.start != nil {
-		p.start.stop(osd)
-		p.start = nil
-	}
 }
 
 // status reads the launcher's position file.
@@ -570,6 +567,8 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 		p.statAt = now
 		p.status()
 	}
+	p.waiting(now, osd, field)
+	dotFree := p.wait == nil // the wait dot has the sprite while it runs
 	if field && p.scrub && p.held != 0 {
 		p.shownAt = now // a hold keeps the overlay up
 		if !p.visible {
@@ -629,7 +628,9 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	if !p.visible && !skipBtn && !peek {
 		if p.dirty {
 			p.painter.hide(osd)
-			osd.Dot(0, 0, 0, false)
+			if dotFree {
+				osd.Dot(0, 0, 0, false)
+			}
 			osd.Bar(0, 0, 0, 0, 0, false)
 			p.dirty = false
 			p.last = ""
@@ -640,7 +641,9 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	var x, y int
 	if p.list != nil {
 		l := p.list
-		osd.Dot(0, 0, 0, false)
+		if dotFree {
+			osd.Dot(0, 0, 0, false)
+		}
 		moved := false
 		if field {
 			moved = l.slide()
@@ -675,10 +678,8 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 			h := p.peekH
 			p.painter.show(osd, 0, 480-h, &gfx.Canvas{W: 720, H: h, Pix: p.canvas.Pix[:720*h*4]}, p.alpha[:720*h])
 		}
-		if p.start != nil {
-			if field {
-				p.start.step(osd)
-			}
+		if !dotFree {
+			p.dotOn = false
 		} else if p.scrub && p.dur > 0 {
 			// the dot: loaded at the press (hidden, so the run starts from
 			// here), shown once the hold runs; the core places it meanwhile
@@ -694,7 +695,9 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 		return
 	}
 	if skipBtn {
-		osd.Dot(0, 0, 0, false)
+		if dotFree {
+			osd.Dot(0, 0, 0, false)
+		}
 		osd.Bar(0, 0, 0, 0, 0, false)
 		x, y = 440, 240
 		key = p.skipKey()
@@ -709,7 +712,7 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	// screen within a line
 	if p.composed {
 		p.sprites()
-		if vx == 0 {
+		if vx == 0 && dotFree {
 			osd.Dot(p.dotX, p.dotY, uint32(gfx.White), p.dotOn)
 		}
 		osd.Bar(p.barX, p.barY, p.barW, BarW, uint32(gfx.GreyHi), p.barOn)
@@ -725,7 +728,9 @@ func (p *Playing) Tick(now time.Time, osd OSD, field bool) {
 	if !p.composed {
 		p.composed = true
 		p.sprites()
-		osd.Dot(p.dotX, p.dotY, uint32(gfx.White), p.dotOn)
+		if dotFree {
+			osd.Dot(p.dotX, p.dotY, uint32(gfx.White), p.dotOn)
+		}
 		osd.Bar(p.barX, p.barY, p.barW, BarW, uint32(gfx.GreyHi), p.barOn)
 	}
 	p.last = key

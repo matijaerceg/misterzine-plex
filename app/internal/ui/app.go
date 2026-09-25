@@ -274,7 +274,7 @@ func (a *App) PlayAt(it *plex.Item, offset int) { a.PlayQueue(it, offset, nil, 0
 // PlayQueue is PlayAt with the items around it (a season's episodes), so
 // the overlay's Prev and Next can move along them. The screen cuts to
 // black at once, with the title, the bar and the times on the overlay
-// and the start dot running in the middle while the stream comes up;
+// and the wait dot running in the middle while the stream comes up;
 // when the presenter publishes its first frame the dot goes and the UI
 // drives the overlay until playback ends.
 func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) {
@@ -339,9 +339,7 @@ func (a *App) PlayQueue(it *plex.Item, offset int, queue []*plex.Item, idx int) 
 		if offset < 0 {
 			ctl.pos = float64(it.ViewOffset)
 		}
-		if a.osd != nil {
-			ctl.start = newStartDot(os.Getenv("PLEXCRT_START_DOT"))
-		}
+		ctl.starting, ctl.waitSpec = a.osd != nil, os.Getenv("PLEXCRT_WAIT_DOT")
 		next, ended := a.playLoop(sess, ctl)
 		if msg, err := os.ReadFile("/tmp/plexplay.stat.err"); err == nil && len(msg) > 0 {
 			a.Notice = plex.Fold(strings.TrimSpace(string(msg)))
@@ -375,9 +373,10 @@ func (a *App) blank() {
 	a.Out.End()
 }
 
-// playLoop runs one playback: the start dot until the picture is up, then
-// keys go to the overlay controller. Returns the controller's Next (+1/-1
-// for the queue, 0 to stop) and whether the stream ran to its end.
+// playLoop runs one playback: the wait dot until the picture is up, then
+// keys go to the overlay controller, which brings the dot back whenever
+// the frames stop. Returns the controller's Next (+1/-1 for the queue, 0
+// to stop) and whether the stream ran to its end.
 func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 	// The overlay is drawn once per field, right after the core's field
 	// counter moves, and at once after a key. The dot's run and the
@@ -393,6 +392,8 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 	if fields != nil {
 		lastField = fields.Field()
 	}
+	frames, _ := a.Out.(interface{ Published() (uint32, bool) })
+	var lastFrame uint32
 	// two cores: more Ps only spin looking for work against the decoder
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
 	up := false
@@ -412,10 +413,10 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 				a.Log.Printf("play: %v", err)
 			}
 			if a.osd != nil {
-				// the menus use neither the plane nor the sprites; a start
-				// that never got a picture still has its dot running
+				// the menus use neither the plane nor the sprites, and the
+				// wait dot may still be running
 				a.osd.Hide()
-				ctl.pictureUp(a.osd)
+				ctl.end(a.osd)
 				a.osd.Dot(0, 0, 0, false)
 				a.osd.Bar(0, 0, 0, 0, 0, false)
 			}
@@ -431,6 +432,9 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 			}
 			if !up {
 				if ev.Key == input.Back && !ev.Release && !ev.Repeat {
+					if a.osd != nil {
+						ctl.end(a.osd) // the dot goes with the press
+					}
 					sess.Stop() // gave up waiting
 				}
 				continue
@@ -438,6 +442,7 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 			if ctl.Key(ev, time.Now()) {
 				if a.osd != nil {
 					a.osd.Hide()
+					ctl.end(a.osd)
 				}
 				stopped = true
 				sess.Stop()
@@ -461,8 +466,11 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 				if a.Out.Foreign() || a.osd == nil && a.Player.Started(a.Starting) {
 					up = true // the dot goes; the strip runs out over the picture
 					a.Starting = time.Time{}
+					if frames != nil {
+						lastFrame, _ = frames.Published()
+					}
 					if a.osd != nil {
-						ctl.pictureUp(a.osd)
+						ctl.framed(time.Now(), a.osd)
 					}
 					continue
 				}
@@ -475,6 +483,14 @@ func (a *App) playLoop(sess *Session, ctl *Playing) (int, bool) {
 				continue
 			}
 			if a.osd != nil {
+				// a frame from the presenter (a wiped header is none): the
+				// picture is moving, so no wait dot
+				if frames != nil {
+					if seq, ok := frames.Published(); ok && seq != lastFrame {
+						lastFrame = seq
+						ctl.framed(time.Now(), a.osd)
+					}
+				}
 				ctl.Tick(time.Now(), a.osd, true)
 				selectionPresented()
 			}
