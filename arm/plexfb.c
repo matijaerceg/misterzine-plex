@@ -31,6 +31,10 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/types.h>
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define HAVE_NEON 1
+#endif
 
 #define PHYS_BASE   0x30000000u
 #define MAP_SIZE    (8u << 20)
@@ -222,11 +226,191 @@ static volatile unsigned ring_filled = 0, ring_shown = 0;   /* frame counters */
    one a previous presenter left on screen (its frame holds until ours) */
 static unsigned ring_base = 0;
 static volatile int ring_eof = 0;
-static double stat_read_ms = 0;
-/* every decoded frame is kept in RAM too (the ring is write-combined and
-   must never be read): the overlay blends there, and a pause holds it */
+static double stat_read_ms = 0, stat_scale_ms = 0;
+/* every decoded frame is kept in RAM too, at the size it arrived (the ring is
+   write-combined and must never be read): it is scaled from there into the
+   ring, and an empty AVI chunk repeats it. The slack lets a scaler row read a
+   few bytes past the last pixel it uses. */
+#define MAX_SRC_W   1920
+#define MAX_SRC_H   1088
+#define RAM_BYTES   (MAX_SRC_W * MAX_SRC_H * 3 / 2 + 64)
 static uint8_t *ram[RING];
-static uint8_t *ram_slot(int i) { if (!ram[i]) ram[i] = malloc(W * H * 4); return ram[i]; }
+static uint8_t *ram_slot(int i) { if (!ram[i]) ram[i] = malloc(RAM_BYTES); return ram[i]; }
+
+/* ---------- picture geometry ----------
+ * Plex sends square-pixel frames of whatever size fits the requested box:
+ * 640x480 for 4:3, 720x404 for 16:9, 644x480 for a source a little wider
+ * than 4:3. The raster is 720x480 on a 4:3 screen. Each frame is fitted into
+ * it (letterbox or pillarbox) and resampled while it is copied into the ring:
+ * two taps in each direction, NEON on the ARM, and a plain C version that
+ * gives the same bytes. The source rectangle is separate from the frame, so a
+ * crop or a zoom is only a different rectangle. */
+struct plane_map {
+	int sw, sh;                 /* source plane */
+	int cx, cy, cw, ch;         /* source rectangle */
+	int dx, dy, dw, dh;         /* where it lands in the output plane */
+	int ow, oh;                 /* output plane: 720x480 or 360x240 */
+	uint8_t black;
+	int16_t hx[W]; uint8_t hw[W];   /* per output column: left tap, weight of the right one /128 */
+	int16_t vy[H]; uint8_t vw[H];   /* per output row */
+	int groups;                 /* NEON: whole groups of 8 output columns, 0 = C only */
+	int16_t gbase[W / 8];
+	uint8_t gia[W], gib[W], gwa[W], gwb[W];
+};
+struct geometry {
+	int w, h;                   /* frame size */
+	double aspect;              /* display aspect of the whole frame */
+	struct plane_map p[3];      /* Y, U, V */
+};
+static struct geometry g_geo;
+static int g_scale_c = 0;       /* force the C scaler (tests, PLEXFB_SCALE_C) */
+
+/* output position k samples the input at (k + 0.5) * n_in / n_out - 0.5,
+   in 1/128 pixel, clamped to the rectangle */
+static void taps(int n_out, int n_in, int16_t *idx, uint8_t *wt)
+{
+	for (int k = 0; k < n_out; k++) {
+		int64_t p = (int64_t)(2 * k + 1) * n_in * 64 / n_out - 64;
+		if (p < 0) p = 0;
+		int i = (int)(p >> 7), f = (int)(p & 127);
+		if (i >= n_in - 1) { i = n_in - 1; f = 0; }
+		idx[k] = (int16_t)i; wt[k] = (uint8_t)f;
+	}
+}
+
+static void plane_setup(struct plane_map *m, int sw, int sh, int cx, int cy, int cw, int ch,
+                        int dx, int dy, int dw, int dh, int ow, int oh, uint8_t black)
+{
+	*m = (struct plane_map){ .sw = sw, .sh = sh, .cx = cx, .cy = cy, .cw = cw, .ch = ch,
+	                         .dx = dx, .dy = dy, .dw = dw, .dh = dh, .ow = ow, .oh = oh, .black = black };
+	taps(dw, cw, m->hx, m->hw);
+	taps(dh, ch, m->vy, m->vw);
+	/* a group of 8 outputs gathers from one 16-byte window: fine up to about a
+	   2:1 shrink, beyond that the plain loop does the row */
+	m->groups = dw / 8;
+	for (int g = 0; g < m->groups; g++) {
+		int base = m->hx[8 * g];
+		if (m->hx[8 * g + 7] + 1 - base > 15) { m->groups = 0; break; }
+		m->gbase[g] = (int16_t)base;
+		for (int k = 0; k < 8; k++) {
+			int x = 8 * g + k;
+			m->gia[x] = (uint8_t)(m->hx[x] - base);
+			m->gib[x] = (uint8_t)(m->hx[x] - base + 1);
+			m->gwb[x] = m->hw[x];
+			m->gwa[x] = (uint8_t)(128 - m->hw[x]);
+		}
+	}
+}
+
+/* where a frame of display aspect `aspect` and `sh` lines goes on the raster */
+static void fit(double aspect, int sh, int *dx, int *dy, int *dw, int *dh)
+{
+	int w = W, h = H;
+	if (aspect > 4.0 / 3.0) h = 2 * (int)lround(H * (4.0 / 3.0) / aspect / 2);
+	else                    w = 2 * (int)lround(W * aspect / (4.0 / 3.0) / 2);
+	if (w < 16) w = 16;
+	if (h < 16) h = 16;
+	if (w >= W - W / 60) w = W;          /* near 4:3: no slivers of border */
+	/* within 2% of the frame's own line count, keep its lines 1:1: a resample
+	   that small would only soften the picture (644x480 fills the screen) */
+	if (!(sh & 1) && sh <= H && abs(h - sh) <= H / 50) h = sh;
+	*dw = w; *dh = h; *dx = (W - w) / 2 & ~1; *dy = (H - h) / 2 & ~1;
+}
+
+/* the whole frame, fitted to the raster; frame planes are packed I420 */
+static void geometry_setup(struct geometry *g, int w, int h, double aspect)
+{
+	int dx, dy, dw, dh;
+	int w2 = (w + 1) / 2, h2 = (h + 1) / 2;
+	if (!(aspect > 0.25 && aspect < 4.0)) aspect = (double)w / h;
+	g->w = w; g->h = h; g->aspect = aspect;
+	fit(aspect, h, &dx, &dy, &dw, &dh);
+	plane_setup(&g->p[0], w, h, 0, 0, w, h, dx, dy, dw, dh, W, H, 16);
+	for (int i = 1; i < 3; i++)
+		plane_setup(&g->p[i], w2, h2, 0, 0, w2, h2, dx / 2, dy / 2, dw / 2, dh / 2, W / 2, H / 2, 128);
+}
+
+static size_t geometry_frame_bytes(const struct geometry *g)
+{
+	return (size_t)g->w * g->h + 2 * (size_t)((g->w + 1) / 2) * ((g->h + 1) / 2);
+}
+
+/* one output row from a source row that already starts at the rectangle's left edge */
+static void hscale_c(const struct plane_map *m, const uint8_t *row, uint8_t *d, int from)
+{
+	for (int k = from; k < m->dw; k++) {
+		int i = m->hx[k], f = m->hw[k];
+		d[k] = (uint8_t)((row[i] * (128 - f) + row[i + 1] * f + 64) >> 7);
+	}
+}
+
+static void hscale(const struct plane_map *m, const uint8_t *row, uint8_t *d)
+{
+	int k = 0;
+#ifdef HAVE_NEON
+	if (!g_scale_c)
+		for (int g = 0; g < m->groups; g++, k += 8) {
+			const uint8_t *p = row + m->gbase[g];
+			uint8x8x2_t win = { { vld1_u8(p), vld1_u8(p + 8) } };
+			uint8x8_t a = vtbl2_u8(win, vld1_u8(m->gia + k));
+			uint8x8_t b = vtbl2_u8(win, vld1_u8(m->gib + k));
+			uint16x8_t acc = vmull_u8(a, vld1_u8(m->gwa + k));
+			acc = vmlal_u8(acc, b, vld1_u8(m->gwb + k));
+			vst1_u8(d + k, vrshrn_n_u16(acc, 7));
+		}
+#endif
+	hscale_c(m, row, d, k);
+}
+
+/* rows r0 and r1 mixed by f/128 into out, n pixels */
+static void vblend(const uint8_t *r0, const uint8_t *r1, int f, uint8_t *out, int n)
+{
+	int x = 0;
+#ifdef HAVE_NEON
+	if (!g_scale_c) {
+		uint8x8_t wa = vdup_n_u8((uint8_t)(128 - f)), wb = vdup_n_u8((uint8_t)f);
+		for (; x + 8 <= n; x += 8) {
+			uint16x8_t acc = vmull_u8(vld1_u8(r0 + x), wa);
+			acc = vmlal_u8(acc, vld1_u8(r1 + x), wb);
+			vst1_u8(out + x, vrshrn_n_u16(acc, 7));
+		}
+	}
+#endif
+	for (; x < n; x++) out[x] = (uint8_t)((r0[x] * (128 - f) + r1[x] * f + 64) >> 7);
+}
+
+/* one plane of the frame into its output plane, borders included, every
+   output byte written once and in order (the ring is write-combined) */
+static void scale_plane(const struct plane_map *m, const uint8_t *src, uint8_t *dst)
+{
+	static uint8_t tmp[MAX_SRC_W + 32];
+	int hcopy = m->cw == m->dw;          /* 1:1 columns: taps are k, weight 0 */
+	for (int y = 0; y < m->oh; y++) {
+		uint8_t *d = dst + (size_t)y * m->ow;
+		if (y < m->dy || y >= m->dy + m->dh) { memset(d, m->black, m->ow); continue; }
+		int k = y - m->dy, sy = m->cy + m->vy[k];
+		const uint8_t *row = src + (size_t)sy * m->sw + m->cx;
+		if (m->vw[k]) {
+			const uint8_t *next = sy + 1 < m->sh ? row + m->sw : row;
+			vblend(row, next, m->vw[k], tmp, m->cw);
+			memset(tmp + m->cw, tmp[m->cw - 1], 16);
+			row = tmp;
+		}
+		if (m->dx) memset(d, m->black, m->dx);
+		if (hcopy) memcpy(d + m->dx, row, m->dw);
+		else hscale(m, row, d + m->dx);
+		if (m->dx + m->dw < m->ow) memset(d + m->dx + m->dw, m->black, m->ow - m->dx - m->dw);
+	}
+}
+
+/* a packed I420 frame into a 720x480 yuv420p ring slot */
+static void scale_frame(const struct geometry *g, const uint8_t *src, uint8_t *slot)
+{
+	size_t y = (size_t)g->w * g->h, c = (size_t)((g->w + 1) / 2) * ((g->h + 1) / 2);
+	scale_plane(&g->p[0], src, slot);
+	scale_plane(&g->p[1], src + y, slot + W * H);
+	scale_plane(&g->p[2], src + y + c, slot + W * H + (W / 2) * (H / 2));
+}
 
 static void *reader_thread(void *arg)
 {
@@ -328,17 +512,20 @@ static void present_loop(double fps, uint32_t seq)
 	ring_eof = 1;                      /* tells the audio thread to wind down */
 	write_status((ring_shown - ring_base) / fps, starved);
 	if (!g_hold) blank_screen(++seq);
-	printf("%d frames in %.1fs (%.2f fps), avg read %.1f ms, %d starved slots, max %d frames ahead%s\n",
-	       n, dt, n / dt, n ? stat_read_ms / n : 0, starved, max_ahead, g_quit ? ", stopped" : "");
+	printf("%d frames in %.1fs (%.2f fps), avg read %.1f ms, scale %.1f ms, %d starved slots, max %d frames ahead%s\n",
+	       n, dt, n / dt, n ? stat_read_ms / n : 0, n ? stat_scale_ms / n : 0, starved, max_ahead,
+	       g_quit ? ", stopped" : "");
 }
 
 /* ---------- AVI mode: one interleaved stream, the presenter is the clock ----------
  * ffmpeg writes raw yuv420p video ('00dc' chunks) and S16LE stereo 48 kHz audio
- * ('01wb' chunks) into a single AVI on stdin. Video goes into the frame ring as
- * before. Audio goes into a FIFO and is released to aplay only when the picture
- * has caught up to it, so the audio position follows the field counter and does
- * not depend on how far ahead the source interleaved its audio (Plex sends it
- * about a second early, which is what put the sound ahead of the picture).
+ * ('01wb' chunks) into a single AVI on stdin. Video frames come at the size the
+ * decoder made them and are fitted to the 4:3 raster on their way into the
+ * frame ring (see picture geometry). Audio goes into a FIFO and is released to
+ * aplay only when the picture has caught up to it, so the audio position
+ * follows the field counter and does not depend on how far ahead the source
+ * interleaved its audio (Plex sends it about a second early, which is what put
+ * the sound ahead of the picture).
  * An empty video chunk (ffmpeg holding a frame over a timestamp gap) repeats
  * the previous frame, so every chunk is one frame of picture time.
  *
@@ -347,6 +534,7 @@ static void present_loop(double fps, uint32_t seq)
  *   PLEXFB_AOFF   extra audio delay in seconds, positive = later (default 0)
  *   PLEXFB_ACATCH how far the released audio may fall behind the picture before
  *                 the queued audio up to the picture is dropped (default 0.15)
+ *   PLEXFB_SCALE_C scale with the plain C loops instead of NEON (same output)
  *
  * The gate alone only holds audio back. A stall that keeps the audio from
  * aplay for a while (a late wakeup, a blocked write) would leave every later
@@ -363,6 +551,7 @@ static double g_acatch = 0.15;
 static FILE *aplay;
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static uint32_t rd16(const uint8_t *p) { return p[0] | p[1] << 8; }
 
 static int read_full(void *dst, size_t n)
 {
@@ -394,7 +583,12 @@ static void *avi_reader(void *arg)
 		fprintf(stderr, "plexfb: stdin is not an AVI stream\n");
 		ring_eof = 1; return NULL;
 	}
-	size_t vneed = FRAME_BYTES;
+	/* the video stream's header says the frame size (strf, a BITMAPINFOHEADER)
+	   and, when ffmpeg knows it, the display aspect (vprp); without a size the
+	   frames are taken to be 720x480 */
+	int vw = W, vh = H, vids = 0, ready = 0;
+	double vaspect = 0;
+	size_t vneed = 0;
 	unsigned bad = 0;
 	for (;;) {
 		uint8_t ch[8];
@@ -409,13 +603,42 @@ static void *avi_reader(void *arg)
 		if (!memcmp(ch, "strh", 4) && sz >= 32 && sz <= 256) {
 			uint8_t b[256];
 			if (!read_full(b, padded)) break;
-			if (!memcmp(b, "vids", 4)) {
+			vids = !memcmp(b, "vids", 4);
+			if (vids) {
 				uint32_t scale = rd32(b + 20), rate = rd32(b + 24);
 				if (scale && rate) g_avi_fps = (double)rate / scale;
 			}
 			continue;
 		}
+		if (vids && !ready && !memcmp(ch, "strf", 4) && sz >= 20 && sz <= 256) {
+			uint8_t b[256];
+			if (!read_full(b, padded)) break;
+			int32_t bw = (int32_t)rd32(b + 4), bh = (int32_t)rd32(b + 8);
+			if (bh < 0) bh = -bh;
+			if (bw >= 16 && bw <= MAX_SRC_W && bh >= 16 && bh <= MAX_SRC_H && rd16(b + 14) == 12
+			    && (!memcmp(b + 16, "I420", 4) || !memcmp(b + 16, "IYUV", 4))) {
+				vw = bw; vh = bh;
+			} else
+				fprintf(stderr, "plexfb: video %dx%d, %u bits, %.4s: not yuv420p within %dx%d, taking 720x480\n",
+				        bw, bh, rd16(b + 14), (const char *)b + 16, MAX_SRC_W, MAX_SRC_H);
+			continue;
+		}
+		if (vids && !ready && !memcmp(ch, "vprp", 4) && sz >= 24 && sz <= 256) {
+			uint8_t b[256];
+			if (!read_full(b, padded)) break;
+			uint32_t ar = rd32(b + 20);               /* FrameAspectRatio, x << 16 | y */
+			if ((ar >> 16) && (ar & 0xffff)) vaspect = (double)(ar >> 16) / (ar & 0xffff);
+			continue;
+		}
 		if (!memcmp(ch, "00dc", 4)) {
+			if (!ready) {
+				geometry_setup(&g_geo, vw, vh, vaspect);
+				vneed = geometry_frame_bytes(&g_geo);
+				const struct plane_map *y = &g_geo.p[0];
+				fprintf(stderr, "plexfb: picture %dx%d, aspect %.3f -> %dx%d at %d,%d%s\n", vw, vh, g_geo.aspect,
+				        y->dw, y->dh, y->dx, y->dy, y->groups || y->cw == y->dw ? "" : " (C scaler)");
+				ready = 1;
+			}
 			if (sz && sz != vneed) {
 				if (bad++ < 3) fprintf(stderr, "plexfb: video chunk %u bytes, expected %u\n", sz, (unsigned)vneed);
 				if (!skip_bytes(padded)) break;
@@ -430,8 +653,9 @@ static void *avi_reader(void *arg)
 				if (ring_filled != ring_base)
 					memcpy(dst, ram_slot((ring_filled - 1) % RING), vneed);
 				else {
-					memset(dst, 16, W * H);
-					memset(dst + W * H, 128, W * H / 2);
+					size_t luma = (size_t)vw * vh;
+					memset(dst, 16, luma);
+					memset(dst + luma, 128, vneed - luma);
 				}
 			} else {
 				double a = now();
@@ -439,7 +663,9 @@ static void *avi_reader(void *arg)
 				if (sz & 1) skip_bytes(1);
 				stat_read_ms += (now() - a) * 1e3;
 			}
-			memcpy(map + BUF_OFF(ring_filled % RING), dst, vneed);
+			double s = now();
+			scale_frame(&g_geo, dst, map + BUF_OFF(ring_filled % RING));
+			stat_scale_ms += (now() - s) * 1e3;
 			__sync_synchronize();
 			ring_filled++;
 		}
@@ -502,6 +728,7 @@ static void *audio_thread(void *arg)
 	return NULL;
 }
 
+#ifndef PLEXFB_TEST          /* tools/plexfb_scale_test.c brings its own main */
 int main(int argc, char **argv)
 {
 	const char *mode = argc > 1 ? argv[1] : "card";
@@ -573,6 +800,7 @@ int main(int argc, char **argv)
 		if (getenv("PLEXFB_ALEAD")) g_alead = atof(getenv("PLEXFB_ALEAD"));
 		if (getenv("PLEXFB_AOFF"))  g_aoff  = atof(getenv("PLEXFB_AOFF"));
 		if (getenv("PLEXFB_ACATCH")) g_acatch = atof(getenv("PLEXFB_ACATCH"));
+		g_scale_c = getenv("PLEXFB_SCALE_C") != NULL;
 		if (fcntl(0, F_SETPIPE_SZ, 4 << 20) < 0) perror("F_SETPIPE_SZ (ignored)");
 		signal(SIGUSR1, on_usr1);
 		signal(SIGUSR2, on_usr2);
@@ -606,6 +834,7 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	fprintf(stderr, "usage: plexfb card|anim [s]|raw [fps]|status\n");
+	fprintf(stderr, "usage: plexfb card|anim [s]|raw [fps]|avi [fps]|status\n");
 	return 2;
 }
+#endif

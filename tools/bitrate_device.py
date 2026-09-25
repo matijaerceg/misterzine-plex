@@ -26,8 +26,7 @@ try:
                    MISTERZINE_PLEX_OWNER=str(root/'bitrate_device.py'))
         with (root / (name+'.log')).open('w') as log:
             decode = subprocess.Popen([ff, '-nostdin', '-loglevel', 'warning', '-threads', '2', '-i', str(root/name),
-                       '-map', '0:v:0', '-vf', 'scale=720:min(480\\,trunc(480*4/3*ih/iw/2)*2):flags=fast_bilinear,pad=720:480:0:(480-ih)/2,format=yuv420p',
-                       '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p', '-map', '0:a:0', '-ac', '2', '-ar', '48000',
+                       '-map', '0:v:0', '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p', '-map', '0:a:0', '-ac', '2', '-ar', '48000',
                        '-c:a', 'pcm_s16le', '-f', 'avi', 'pipe:1'], stdout=subprocess.PIPE, stderr=log, env=env)
             present = subprocess.Popen([fb, 'avi', str(sample['fps'])], stdin=decode.stdout, stdout=log, stderr=log, env=env)
             decode.stdout.close()

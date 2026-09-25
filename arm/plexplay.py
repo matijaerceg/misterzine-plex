@@ -13,9 +13,8 @@ Asks the server for a 720-wide H.264 transcode as progressive Matroska over
 plain HTTP (one GET, one demux), pipes it through ffmpeg: video as planar YUV
 and audio as PCM in one AVI into plexfb, which shows the picture from the
 core's frame ring and releases the sound against the same field clock. The
-frame is vertically scaled so the square-pixel picture Plex delivers has the
-right shape on a 4:3 CRT with 720 non-square pixels per line, then padded to
-720x480.
+presenter fits the square-pixel picture Plex delivers to a 4:3 CRT with 720
+non-square pixels per line (letterbox or pillarbox) as it copies each frame.
 
 Control while playing: write a line to the FIFO /tmp/plexplay.ctl
     pause | resume | toggle       hold / continue (audio stops with the picture)
@@ -219,14 +218,14 @@ class Player:
         params.update({k:v for k,v in PLEX_HDRS.items() if k not in ('Accept','X-Plex-Token')})
         url = HOST + '/video/:/transcode/universal/start.mkv?' + urllib.parse.urlencode(params)
 
-        # vertical scale for a 4:3 CRT with 720 px per line, then pad to the raster
-        # a 4:3 source works out a few lines taller than 480: cap it, or pad fails
-        vf = ('scale=720:min(480\\,trunc(480*4/3*ih/iw/2)*2):flags=fast_bilinear,'
-              'pad=720:480:0:(480-ih)/2,format=yuv420p')
-        # the H.264 loop filter costs a fifth of the machine and composite
-        # blurs what it smooths: off unless PLEX_LOOP_FILTER asks for it
-        decode = [] if os.environ.get('PLEX_LOOP_FILTER') else ['-skip_loop_filter', 'all', '-flags2', 'fast']
-        output = ['-map', '0:v:0', '-vf', vf, '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p',
+        # frames leave ffmpeg at the size Plex sent them: the presenter fits them
+        # to the 4:3 raster while it copies them into the frame ring, which costs
+        # a third of what ffmpeg's scaler did and pays for the H.264 loop filter.
+        # Without the filter, block edges build up until the next keyframe and
+        # show in dark scenes. PLEX_SKIP_LOOP_FILTER=noref|all is for lab tests.
+        skip = os.environ.get('PLEX_SKIP_LOOP_FILTER')
+        decode = ['-skip_loop_filter', skip] if skip else []
+        output = ['-map', '0:v:0', '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p',
                   '-map', '0:a:0', '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le',
                   '-f', 'avi', 'pipe:1']
         if self.pump:
@@ -350,7 +349,8 @@ class Player:
         def bars():
             try: os.unlink(STATUS)
             except OSError: pass
-            ff = subprocess.Popen([FF, '-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=720x480:rate=30',
+            # 8:9 pixels: the 4:3 raster, so the presenter shows the bars full screen
+            ff = subprocess.Popen([FF, '-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=720x480:rate=30,setsar=8/9',
                                    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '2',
                                    '-c:v', 'rawvideo', '-pix_fmt', 'yuv420p', '-ac', '2', '-c:a', 'pcm_s16le',
                                    '-f', 'avi', 'pipe:1'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
